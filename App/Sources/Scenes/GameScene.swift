@@ -13,9 +13,14 @@ final class GameScene: SKScene {
     private var baker: TextureBaker!
     private var playerNode: SKSpriteNode!
     private var enemyPools: [EnemyKind: SpriteNodePool] = [:]
+    private var projectilePool: SpriteNodePool!
+    private var gemPool: SpriteNodePool!
     private var background: BackgroundRig!
     private let cameraNode = SKCameraNode()
     private var joystick: VirtualJoystick!
+    private var hud: HUD!
+    private var gameOver: GameOverOverlay!
+    private var runIndex: UInt64 = 0
 
     // Perf telemetry (GOAL Phase 2 acceptance)
     private var perfFrames = 0
@@ -46,13 +51,40 @@ final class GameScene: SKScene {
             )
         }
 
-        joystick = VirtualJoystick(parent: cameraNode, baker: baker)
+        projectilePool = SpriteNodePool(texture: baker.projectile,
+                                        capacity: Balance.projectileCap,
+                                        zPosition: ZBand.projectiles, parent: self)
+        gemPool = SpriteNodePool(texture: baker.gem, capacity: Balance.gemCap,
+                                 zPosition: ZBand.gems, parent: self)
 
-        if ProcessInfo.processInfo.arguments.contains("STRESS") {
+        joystick = VirtualJoystick(parent: cameraNode, baker: baker)
+        hud = HUD(parent: cameraNode, viewSize: size,
+                  safeTop: view.safeAreaInsets.top)
+        gameOver = GameOverOverlay(parent: cameraNode, viewSize: size)
+
+        configureWorld()
+    }
+
+    private func configureWorld() {
+        world.config.viewHalf = Vec2(Float(size.width) / 2, Float(size.height) / 2)
+        let args = ProcessInfo.processInfo.arguments
+        if args.contains("STRESS") {
+            world.config.directorEnabled = false
+            world.config.combatEnabled = false
             world.spawnStressEnemies(500)
-        } else {
-            world.spawnStressEnemies(60)   // interim population until Phase 3's Director
         }
+        #if DEBUG
+        if args.contains("ALMOSTDEAD") {   // fast, deterministic death-flow check
+            world.player.hp = 1
+        }
+        #endif
+    }
+
+    private func restartRun() {
+        runIndex += 1
+        world = World(seed: 0x4E33304E &+ runIndex &* 0x9E3779B9)
+        configureWorld()
+        gameOver.hide()
     }
 
     // MARK: - Loop
@@ -108,6 +140,39 @@ final class GameScene: SKScene {
                                       rotation: rotation)
         }
         for pool in enemyPools.values { pool.endFrame() }
+
+        projectilePool.beginFrame()
+        for p in world.projectiles {
+            projectilePool.place(x: CGFloat(p.pos.x), y: CGFloat(p.pos.y))
+        }
+        projectilePool.endFrame()
+
+        gemPool.beginFrame()
+        for g in world.gems {
+            gemPool.place(x: CGFloat(g.pos.x), y: CGFloat(g.pos.y))
+        }
+        gemPool.endFrame()
+
+        // Player i-frame flicker = readable invulnerability.
+        playerNode.alpha = world.player.iFrames > 0
+            ? (Int(world.tickIndex) % 6 < 3 ? 0.35 : 1.0)
+            : 1.0
+
+        hud.update(world: world)
+        for event in world.events {
+            if case .playerDied = event {
+                gameOver.show(world: world)
+                #if DEBUG
+                // AUTOREPLAY drives the same restart path a tap uses, so the
+                // death→restart loop is screenshot-verifiable headlessly.
+                if ProcessInfo.processInfo.arguments.contains("AUTOREPLAY") {
+                    run(.sequence([.wait(forDuration: 2), .run { [weak self] in
+                        self?.restartRun()
+                    }]))
+                }
+                #endif
+            }
+        }
     }
 
     private func recordPerf(currentTime: Double, tickMS: Double) {
@@ -129,6 +194,10 @@ final class GameScene: SKScene {
     // MARK: - Touch → joystick (camera space)
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if gameOver.isVisible {
+            restartRun()
+            return
+        }
         for t in touches {
             joystick.touchBegan(t, location: t.location(in: cameraNode))
         }

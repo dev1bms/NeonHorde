@@ -28,11 +28,14 @@ final class WorldTests: XCTestCase {
 
     func testEnemiesSeekPlayer() {
         var w = World(seed: 5)
+        w.config.directorEnabled = false
+        w.config.combatEnabled = false   // pure movement — identity must be stable
         w.spawnStressEnemies(50)
         let before = w.enemies.map { $0.pos.distanceSquared(to: w.player.pos) }
         for _ in 0..<120 {
             w.tick(WorldInput())
         }
+        XCTAssertEqual(w.enemies.count, before.count)
         var closer = 0
         for (i, e) in w.enemies.enumerated()
         where e.pos.distanceSquared(to: w.player.pos) < before[i] { closer += 1 }
@@ -49,6 +52,7 @@ final class WorldTests: XCTestCase {
     /// GOAL Contract rule 6: World.tick ≤ 4 ms at 500 enemies.
     func testTickBudgetAt500Enemies() {
         var w = World(seed: 42)
+        w.config.directorEnabled = false
         w.spawnStressEnemies(500)
         let input = WorldInput(move: Vec2(0.5, 0.5))
         // Warm up.
@@ -65,6 +69,7 @@ final class WorldTests: XCTestCase {
     /// must keep tick cost bounded (this regressed in simulator stress runs).
     func testTickBudgetInDenseClump() {
         var w = World(seed: 8)
+        w.config.directorEnabled = false
         w.spawnStressEnemies(500)
         w.debugClump(at: Vec2(10, 10))
         let input = WorldInput()

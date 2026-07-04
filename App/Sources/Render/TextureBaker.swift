@@ -9,6 +9,8 @@ final class TextureBaker {
 
     private(set) var player: SKTexture!
     private(set) var enemyTextures: [EnemyKind: SKTexture] = [:]
+    private(set) var projectile: SKTexture!
+    private(set) var gem: SKTexture!
     private(set) var joystickBase: SKTexture!
     private(set) var joystickKnob: SKTexture!
     private(set) var gridTile: SKTexture!
@@ -30,6 +32,9 @@ final class TextureBaker {
                                            radius: CGFloat(stats.radius),
                                            color: color)
         }
+        projectile = bakeGlow(shape: .circle, radius: CGFloat(Balance.boltRadius),
+                              color: Palette.player, glowScale: 1.6)
+        gem = bakeGlow(shape: .diamond, radius: 7, color: Palette.gem, glowScale: 1.3)
         joystickBase = bakeRing(radius: 52, lineAlpha: 0.25)
         joystickKnob = bakeGlow(shape: .circle, radius: 18, color: Palette.ui.withAlphaComponent(0.6), glowScale: 1.3)
         gridTile = bakeGridTile(size: 256, spacing: 64)

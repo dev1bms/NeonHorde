@@ -10,7 +10,7 @@ The executing agent updates this file continuously. Each phase row carries a sub
 | 3 | Combat loop | ✅ done | Phase 3 | 18 Core tests green; combat/death/restart screenshot-verified (RUN OVER overlay + timer/kill reset); fresh-bot deaths avg 52s min 45s across 20 seeds. NOTE: official 90-240s balance row deferred to Phase 4's upgrade-picking bot (pre-upgrade window 40-120s enforced instead — rationale in BalanceTests) |
 | 4 | Upgrade draft system | ✅ done | Phase 4 | 25 Core tests green; official window: fresh+drafts avg 192s (90-240 ✓); upgrades 2.56× baseline (≥2 ✓); 8 weapon demo screenshots distinct; draft UI verified; player hard-collision added (fixed orbit-blade design flaw) |
 | 5 | Run structure & boss | ✅ done | Phase 5 | Full timeline + arena-wipe boss entrance; kiting bot 5/5 victories; upgrades gate victory (declined=0 wins, 2/2 enrage deaths); defeat+victory screens verified; 60fps. Test spec amended: duration-ratio → victory-gating (boss finale saturates duration) |
-| 6 | Meta progression | ☐ not started | — | |
+| 6 | Meta progression | ✅ done | Phase 6 | 8 MetaTests green; save survives terminate+relaunch (◈500 screenshot + meta.json inspection, banked run totalRuns:1/bestKills:58); Lab adaptive layout verified LARGE+SMALL; Overdrive+revive+cosmetics wired |
 | 7 | Juice & audio | ☐ not started | — | |
 | 8 | Menus, share & identity | ☐ not started | — | |
 | 9 | QA hardening | ☐ not started | — | |

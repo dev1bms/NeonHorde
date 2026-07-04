@@ -60,7 +60,7 @@ extension World {
         var hitAny = false
         for i in enemies.indices
         where enemies[i].pos.distanceSquared(to: player.pos) <= p.area * p.area {
-            enemies[i].hp -= p.damage
+            damageEnemy(i, p.damage)
             hitAny = true
         }
         if let b = boss {   // boss damage lands via the novaBurst event splash
@@ -108,7 +108,7 @@ extension World {
             guard along > 0, along < length else { continue }
             let perp = abs(rel.x * dir.y - rel.y * dir.x)
             if perp < p.area + enemies[i].radius {
-                enemies[i].hp -= p.damage
+                damageEnemy(i, p.damage)
             }
         }
         events.append(.railLance(player.pos, dir, length))
@@ -121,7 +121,7 @@ extension World {
         var visited: [Int] = []
         var current = first
         for _ in 0..<p.count {
-            enemies[current].hp -= p.damage
+            damageEnemy(current, p.damage)
             visited.append(current)
             chainPoints.append(enemies[current].pos)
             // Next: nearest unvisited living enemy within jump range.
@@ -186,7 +186,7 @@ extension World {
                 let i = Int(id)
                 let rr = 18 + enemies[i].radius
                 if enemies[i].pos.distanceSquared(to: bladePos) <= rr * rr {
-                    enemies[i].hp -= dps * Balance.dt
+                    enemies[i].hp -= dps * Balance.dt   // continuous grind — no flash spam
                 }
             }
         }

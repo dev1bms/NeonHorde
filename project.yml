@@ -51,6 +51,9 @@ targets:
     platform: iOS
     sources:
       - Tests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: true
     dependencies:
       - target: NeonHorde
 schemes:

@@ -14,6 +14,7 @@ public struct Enemy {
     public var knock: Vec2       // decaying knockback velocity
     public var elite = false     // 2.5× chest-dropper
     public var cool: Float = 0   // ranged-attack cooldown (spitter)
+    public var flash: Float = 0  // white hit-flash timer (render juice)
 
     public init(kind: EnemyKind, pos: Vec2, hp: Float, radius: Float, phase: Float) {
         self.kind = kind
@@ -94,6 +95,7 @@ public enum WorldEvent {
     case bossDied
     case victory
     case revived
+    case damageDealt(Vec2, Int)   // big hits only (≥15), ≤8/tick — damage numbers
 }
 
 public enum GameState: Equatable {
@@ -144,6 +146,7 @@ public struct World {
     var elitesSpawned = 0
     var bossSpawned = false
     var wipeInProgress = false
+    var damageEventsThisTick = 0
     var enemyHash: SpatialHash
     var spawnAccumulator: Float = 0
     public internal(set) var meta = MetaState()
@@ -176,8 +179,20 @@ public struct World {
 
     // MARK: - Tick
 
+    /// Centralized enemy damage: sets the hit-flash and (for big hits)
+    /// emits a capped damage-number event (GOAL §4 Juice).
+    mutating func damageEnemy(_ index: Int, _ amount: Float) {
+        enemies[index].hp -= amount
+        enemies[index].flash = 0.09
+        if amount >= 15, damageEventsThisTick < 8 {
+            damageEventsThisTick += 1
+            events.append(.damageDealt(enemies[index].pos, Int(amount)))
+        }
+    }
+
     public mutating func tick(_ input: WorldInput) {
         events.removeAll(keepingCapacity: true)
+        damageEventsThisTick = 0
         guard state == .playing, pendingDraft == nil else { return }   // draft freezes time
         tickIndex &+= 1
 
@@ -311,6 +326,7 @@ public struct World {
             }
 
             e.phase += Balance.dt
+            e.flash = max(0, e.flash - Balance.dt)
             enemies[i] = e
         }
     }
@@ -379,7 +395,7 @@ public struct World {
                 guard enemies[idx].hp > 0 else { continue }   // already dead this tick
                 let rr = p.radius + enemies[idx].radius
                 guard enemies[idx].pos.distanceSquared(to: p.pos) <= rr * rr else { continue }
-                enemies[idx].hp -= p.damage
+                damageEnemy(idx, p.damage)
                 if p.pierce > 0 {
                     p.pierce -= 1
                 } else {
@@ -414,7 +430,7 @@ public struct World {
             let idx = Int(id)
             let rr = mine.aoe + enemies[idx].radius
             if enemies[idx].pos.distanceSquared(to: mine.pos) <= rr * rr {
-                enemies[idx].hp -= mine.damage
+                damageEnemy(idx, mine.damage)
             }
         }
         events.append(.mineExploded(mine.pos, mine.aoe))
@@ -692,6 +708,12 @@ public struct World {
     /// Test hook: spawns an elite immediately (chest/draft tests).
     internal mutating func testSpawnEliteNow() {
         spawnElite()
+    }
+
+    /// Player-initiated surrender from the pause menu (GOAL §4: banks shards
+    /// earned so far). No playerDied event — the UI drives the flow.
+    public mutating func abandonRun() {
+        state = .dead
     }
 
     /// Demo/screenshot harness: fast-forwards the clock (boss showcase).

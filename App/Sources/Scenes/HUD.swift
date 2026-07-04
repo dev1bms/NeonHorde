@@ -69,6 +69,17 @@ final class HUD {
         levelLabel.position = CGPoint(x: viewSize.width / 2 - 20, y: top - 24)
         root.addChild(levelLabel)
 
+        // Pause button (hit-target name checked by GameScene).
+        let pause = SKLabelNode(fontNamed: "Menlo-Bold")
+        pause.text = "❚❚"
+        pause.fontSize = 17
+        pause.fontColor = Palette.ui.withAlphaComponent(0.7)
+        pause.verticalAlignmentMode = .center
+        pause.horizontalAlignmentMode = .right
+        pause.position = CGPoint(x: viewSize.width / 2 - 20, y: top - 52)
+        pause.name = "pauseButton"
+        root.addChild(pause)
+
         // PRIME bar — hidden until the finale.
         let bossWidth = viewSize.width - 80
         bossBarBG = SKSpriteNode(color: Palette.ui.withAlphaComponent(0.15),

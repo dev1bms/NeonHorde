@@ -29,10 +29,19 @@ final class GameScene: SKScene {
     private var hud: HUD!
     private var gameOver: GameOverOverlay!
     private var draftOverlay: DraftOverlay!
+    private var pauseOverlay: PauseOverlay!
+    private var isPaused2 = false   // "paused" collides with SKNode.isPaused
     private var runIndex: UInt64 = 0
     private var demoWeaponMode = false
     private var meta = MetaState()
     private var runBanked = false
+
+    // Juice state (GOAL §4)
+    private var damageNumbers: DamageNumberRig!
+    private var trailEmitter: SKEmitterNode!
+    private var shake: CGFloat = 0            // decaying screen-shake amplitude
+    private var hitStopUntil: Double = 0      // wall-clock freeze window
+    private var deathSlowMoUntil: Double = 0
 
     // Perf telemetry (GOAL Phase 2 acceptance)
     private var perfFrames = 0
@@ -112,13 +121,52 @@ final class GameScene: SKScene {
         chestPool = SpriteNodePool(texture: baker.chest, capacity: 8,
                                    zPosition: ZBand.gems + 0.5, parent: self)
 
+        damageNumbers = DamageNumberRig(parent: self, baker: baker)
+
+        // Player trail — pure code emitter, tinted by the equipped cosmetic.
+        let trailColors = [Palette.player, Palette.enemyLow, Palette.gem,
+                           UIColor(red: 1, green: 0.85, blue: 0.3, alpha: 1)]
+        trailEmitter = SKEmitterNode()
+        trailEmitter.particleTexture = baker.projectile
+        trailEmitter.particleBirthRate = 34
+        trailEmitter.particleLifetime = 0.45
+        trailEmitter.particleAlpha = 0.5
+        trailEmitter.particleAlphaSpeed = -1.2
+        trailEmitter.particleScale = 0.7
+        trailEmitter.particleScaleSpeed = -1.4
+        trailEmitter.particleColor = trailColors[min(meta.selectedTrail, trailColors.count - 1)]
+        trailEmitter.particleColorBlendFactor = 1
+        trailEmitter.particleBlendMode = .add
+        trailEmitter.targetNode = self          // particles stay in world space
+        trailEmitter.zPosition = ZBand.player - 1
+        playerNode.addChild(trailEmitter)
+
+        Haptics.shared.enabled = meta.hapticsOn
+        AudioManager.shared.start(musicOn: meta.musicOn, sfxOn: meta.sfxOn)
+
         joystick = VirtualJoystick(parent: cameraNode, baker: baker)
         hud = HUD(parent: cameraNode, viewSize: size,
                   safeTop: view.safeAreaInsets.top)
         gameOver = GameOverOverlay(parent: cameraNode, viewSize: size)
         draftOverlay = DraftOverlay(parent: cameraNode, viewSize: size)
+        pauseOverlay = PauseOverlay(parent: cameraNode, viewSize: size)
+
+        // Backgrounding (or any interruption's resign-active) auto-pauses.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.pauseGame()
+        }
 
         configureWorld()
+    }
+
+    private func pauseGame() {
+        guard world.state == .playing, !gameOver.isVisible,
+              !draftOverlay.isVisible, !isPaused2 else { return }
+        isPaused2 = true
+        pauseOverlay.show(meta: meta)
     }
 
     private func configureWorld() {
@@ -195,7 +243,12 @@ final class GameScene: SKScene {
         lastFrameTime = currentTime
         frameDT = min(frameDT, 0.25)   // background/hitch guard
 
-        accumulator += frameDT
+        // Pause and hit-stop both freeze simulated time (GOAL §4).
+        if isPaused2 || currentTime < hitStopUntil {
+            accumulator = 0
+        } else {
+            accumulator += frameDT
+        }
         let step = Double(Balance.dt)
         var steps = 0
         let tickStart = CACurrentMediaTime()
@@ -213,7 +266,9 @@ final class GameScene: SKScene {
         }
 
         syncRender()
-        effects.update(dt: CGFloat(frameDT))
+        let effectsDT = currentTime < deathSlowMoUntil ? frameDT * 0.3 : frameDT
+        effects.update(dt: CGFloat(effectsDT))
+        damageNumbers.update(dt: CGFloat(effectsDT))
         recordPerf(currentTime: currentTime, tickMS: tickMS)
     }
 
@@ -221,13 +276,22 @@ final class GameScene: SKScene {
         let p = world.player.pos
         playerNode.position = CGPoint(x: CGFloat(p.x), y: CGFloat(p.y))
 
-        // Soft-lag camera follow.
+        // Soft-lag camera follow + decaying screen shake.
         let target = playerNode.position
         let lag: CGFloat = 0.12
-        cameraNode.position = CGPoint(
+        var cam = CGPoint(
             x: cameraNode.position.x + (target.x - cameraNode.position.x) * lag,
             y: cameraNode.position.y + (target.y - cameraNode.position.y) * lag
         )
+        if shake > 0.2 {
+            let t = CACurrentMediaTime() * 47
+            cam.x += CGFloat(sin(t * 1.13)) * shake
+            cam.y += CGFloat(cos(t * 0.91)) * shake
+            shake *= 0.88
+        } else {
+            shake = 0
+        }
+        cameraNode.position = cam
         background.update(cameraPosition: cameraNode.position, viewSize: size)
 
         for pool in enemyPools.values { pool.beginFrame() }
@@ -239,9 +303,16 @@ final class GameScene: SKScene {
             case .brick, .splitter, .spitter:
                 rotation = CGFloat(e.phase) * 0.3
             }
-            enemyPools[e.kind]?.place(x: CGFloat(e.pos.x), y: CGFloat(e.pos.y),
-                                      rotation: rotation,
-                                      scale: e.elite ? CGFloat(Balance.eliteScale) : 1)
+            let node = enemyPools[e.kind]?.place(
+                x: CGFloat(e.pos.x), y: CGFloat(e.pos.y), rotation: rotation,
+                scale: e.elite ? CGFloat(Balance.eliteScale) : 1)
+            // White hit-flash while the enemy's flash timer runs (GOAL §4).
+            if e.flash > 0 {
+                node?.color = .white
+                node?.colorBlendFactor = 0.85
+            } else {
+                node?.colorBlendFactor = 0
+            }
         }
         for pool in enemyPools.values { pool.endFrame() }
 
@@ -286,6 +357,7 @@ final class GameScene: SKScene {
         playerNode.alpha = world.player.iFrames > 0
             ? (Int(world.tickIndex) % 6 < 3 ? 0.35 : 1.0)
             : 1.0
+
 
         hud.update(world: world)
     }
@@ -348,14 +420,26 @@ final class GameScene: SKScene {
         }
     }
 
-    /// World events → transient effects and overlay state changes.
+    /// World events → juice, audio, haptics, and overlay state changes.
     private func handleEvents() {
         for event in world.events {
+            if let haptic = HapticMapping.haptic(for: event) {
+                Haptics.shared.play(haptic)
+            }
             switch event {
             case .playerDied:
                 bankRun(victory: false)
-                gameOver.show(world: world)
-                gameOver.setShardsEarned(world.shardsEarned)
+                shake = 14
+                deathSlowMoUntil = CACurrentMediaTime() + 0.55
+                effects.ring(at: playerNode.position, texture: baker.ring,
+                             fromRadius: 10, toRadius: 260, ttl: 0.55,
+                             color: Palette.enemyLow)
+                AudioManager.shared.play(.explosion)
+                run(.sequence([.wait(forDuration: 0.55), .run { [weak self] in
+                    guard let self, self.world.state == .dead else { return }
+                    self.gameOver.show(world: self.world)
+                    self.gameOver.setShardsEarned(self.world.shardsEarned)
+                }]))
                 #if DEBUG
                 // AUTOREPLAY drives the same restart path a tap uses, so the
                 // death→restart loop is screenshot-verifiable headlessly.
@@ -365,7 +449,25 @@ final class GameScene: SKScene {
                     }]))
                 }
                 #endif
+            case .playerHit:
+                shake = max(shake, 6)
+                AudioManager.shared.play(.hit)
+            case .enemyDied(let pos, _):
+                _ = pos
+                AudioManager.shared.play(.laser)   // kill feedback, throttled inside
+            case .gemCollected:
+                AudioManager.shared.play(.pickup)
+            case .leveledUp:
+                effects.ring(at: playerNode.position, texture: baker.ring,
+                             fromRadius: 16, toRadius: 130, ttl: 0.4)
+                AudioManager.shared.play(.levelup)
+            case .revived:
+                shake = 10
+                effects.ring(at: playerNode.position, texture: baker.ring,
+                             fromRadius: 20, toRadius: 320, ttl: 0.7, color: Palette.gem)
+                AudioManager.shared.play(.revive)
             case .draftOpened:
+                AudioManager.shared.play(.uitick)
                 if let draft = world.pendingDraft {
                     draftOverlay.show(draft: draft, world: world, baker: baker)
                 }
@@ -373,9 +475,11 @@ final class GameScene: SKScene {
                 effects.ring(at: CGPoint(x: CGFloat(center.x), y: CGFloat(center.y)),
                              texture: baker.ring, fromRadius: 20, toRadius: CGFloat(radius))
             case .mineExploded(let center, let radius):
+                shake = max(shake, 3)
                 effects.ring(at: CGPoint(x: CGFloat(center.x), y: CGFloat(center.y)),
                              texture: baker.ring, fromRadius: 10, toRadius: CGFloat(radius),
                              ttl: 0.3, color: Palette.enemyHigh)
+                AudioManager.shared.play(.explosion)
             case .railLance(let origin, let dir, let length):
                 effects.beam(from: CGPoint(x: CGFloat(origin.x), y: CGFloat(origin.y)),
                              angle: CGFloat(atan2Approx(dir.y, dir.x)),
@@ -384,18 +488,61 @@ final class GameScene: SKScene {
             case .chainArc(let points):
                 effects.chain(points: points.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) },
                               texture: baker.beamSegment)
+            case .damageDealt(let pos, let amount):
+                damageNumbers.spawn(amount: amount,
+                                    at: CGPoint(x: CGFloat(pos.x), y: CGFloat(pos.y) + 14))
+            case .eliteSpawned:
+                shake = max(shake, 4)
+                AudioManager.shared.play(.bossroar)
+            case .chestCollected(let pos):
+                effects.ring(at: CGPoint(x: CGFloat(pos.x), y: CGFloat(pos.y)),
+                             texture: baker.ring, fromRadius: 10, toRadius: 90, ttl: 0.4,
+                             color: UIColor(red: 1, green: 0.85, blue: 0.3, alpha: 1))
+                AudioManager.shared.play(.levelup)
+            case .bossSpawned:
+                shake = 16
+                hitStopUntil = CACurrentMediaTime() + 0.04
+                effects.ring(at: playerNode.position, texture: baker.ring,
+                             fromRadius: 40, toRadius: 700, ttl: 0.8)
+                showBossBanner()
+                AudioManager.shared.play(.bossroar)
+                AudioManager.shared.setBossMode(true)
+            case .bossPhase:
+                shake = 10
+                hitStopUntil = CACurrentMediaTime() + 0.04
+                AudioManager.shared.play(.bossroar)
+            case .bossDied:
+                shake = 18
+                hitStopUntil = CACurrentMediaTime() + 0.08
+                AudioManager.shared.setBossMode(false)
+                AudioManager.shared.play(.explosion)
             case .victory:
                 bankRun(victory: true)
                 gameOver.showVictory(world: world)
                 gameOver.setShardsEarned(world.shardsEarned)
-            case .bossSpawned:
-                // Arena-wipe shockwave sells the entrance.
-                effects.ring(at: playerNode.position, texture: baker.ring,
-                             fromRadius: 40, toRadius: 700, ttl: 0.8)
-            default:
-                break   // hits/kills/gems get their juice in Phase 7
+            case .chestDropped:
+                break
             }
         }
+    }
+
+    /// PRIME entrance banner — one-shot SKAction, not a hot path.
+    private func showBossBanner() {
+        let banner = SKLabelNode(fontNamed: "Menlo-Bold")
+        banner.text = "P R I M E"
+        banner.fontSize = 52
+        banner.fontColor = Palette.enemyLow
+        banner.position = CGPoint(x: 0, y: 120)
+        banner.zPosition = ZBand.hud + 5
+        banner.alpha = 0
+        banner.setScale(1.6)
+        cameraNode.addChild(banner)
+        banner.run(.sequence([
+            .group([.fadeIn(withDuration: 0.25), .scale(to: 1.0, duration: 0.25)]),
+            .wait(forDuration: 1.4),
+            .fadeOut(withDuration: 0.5),
+            .removeFromParent(),
+        ]))
     }
 
     private func recordPerf(currentTime: Double, tickMS: Double) {
@@ -417,6 +564,44 @@ final class GameScene: SKScene {
     // MARK: - Touch → joystick (camera space)
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if pauseOverlay.isVisible {
+            guard let touch = touches.first else { return }
+            switch pauseOverlay.control(at: nodes(at: touch.location(in: self))) {
+            case "resume":
+                isPaused2 = false
+                pauseOverlay.hide()
+            case "abandon":
+                isPaused2 = false
+                pauseOverlay.hide()
+                world.abandonRun()
+                bankRun(victory: false)
+                gameOver.show(world: world)
+                gameOver.setShardsEarned(world.shardsEarned)
+            case "toggle-music":
+                meta.musicOn.toggle()
+                SaveStore.save(meta)
+                AudioManager.shared.setMusicOn(meta.musicOn)
+                pauseOverlay.refreshToggles(meta: meta)
+            case "toggle-sfx":
+                meta.sfxOn.toggle()
+                SaveStore.save(meta)
+                AudioManager.shared.setSFXOn(meta.sfxOn)
+                pauseOverlay.refreshToggles(meta: meta)
+            case "toggle-haptics":
+                meta.hapticsOn.toggle()
+                SaveStore.save(meta)
+                Haptics.shared.enabled = meta.hapticsOn
+                pauseOverlay.refreshToggles(meta: meta)
+            default:
+                break
+            }
+            return
+        }
+        if let touch = touches.first, world.state == .playing, !gameOver.isVisible,
+           nodes(at: touch.location(in: self)).contains(where: { $0.name == "pauseButton" }) {
+            pauseGame()
+            return
+        }
         if gameOver.isVisible {
             if let touch = touches.first,
                nodes(at: touch.location(in: self)).contains(where: { $0.name == "labButton" }) {

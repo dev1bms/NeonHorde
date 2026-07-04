@@ -46,10 +46,13 @@ final class SpriteNodePool {
     }
 
     /// Places the next pooled node. Returns nil when capacity is exhausted
-    /// (upstream pool caps should make that impossible).
+    /// (upstream pool caps should make that impossible). `texture` overrides
+    /// the pool default (globally-synced sprite animation frames — same frame
+    /// for every entity of a kind keeps SpriteKit batching intact).
     @discardableResult
     func place(x: CGFloat, y: CGFloat, rotation: CGFloat = 0, scale: CGFloat = 1,
-               alpha: CGFloat = 1) -> SKSpriteNode? {
+               alpha: CGFloat = 1, texture: SKTexture? = nil,
+               size: CGSize? = nil) -> SKSpriteNode? {
         guard cursor < nodes.count else { return nil }
         let n = nodes[cursor]
         cursor += 1
@@ -58,6 +61,8 @@ final class SpriteNodePool {
         n.zRotation = rotation
         n.setScale(scale)
         n.alpha = alpha
+        if let texture { n.texture = texture }
+        if let size { n.size = size }
         return n
     }
 

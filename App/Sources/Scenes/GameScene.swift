@@ -11,7 +11,13 @@ final class GameScene: SKScene {
 
     // Render
     private var baker: TextureBaker!
-    private var playerNode: SKSpriteNode!
+    private var art: ArtLibrary!
+    private var playerRig: PlayerRig!
+    private var playerNode: SKSpriteNode { playerRig.node }
+    private var propsRig: PropsRig!
+    private var ambientTint: SKSpriteNode!
+    private var prevPlayerPos = CGPoint.zero
+    private var prevProjectileCount = 0
     private var enemyPools: [EnemyKind: SpriteNodePool] = [:]
     private var projectilePool: SpriteNodePool!
     private var minePool: SpriteNodePool!
@@ -63,24 +69,32 @@ final class GameScene: SKScene {
         }
         #endif
         baker = TextureBaker(view: view, playerShape: meta.selectedShape)
+        art = ArtLibrary()
 
         camera = cameraNode
         addChild(cameraNode)
 
-        background = BackgroundRig(parent: self, baker: baker, viewSize: size)
+        background = BackgroundRig(parent: self, baker: baker, art: art, viewSize: size)
+        propsRig = PropsRig(parent: self, art: art)
+        playerRig = PlayerRig(parent: self, art: art, baker: baker)
 
-        playerNode = SKSpriteNode(texture: baker.player)
-        playerNode.zPosition = ZBand.player
-        playerNode.blendMode = .add
-        addChild(playerNode)
+        // Stage ambience tint over everything but the HUD.
+        ambientTint = SKSpriteNode(color: .clear,
+                                   size: CGSize(width: size.width * 2, height: size.height * 2))
+        ambientTint.zPosition = ZBand.effects + 5
+        ambientTint.alpha = 0
+        cameraNode.addChild(ambientTint)
 
         for (i, kind) in EnemyKind.allCases.enumerated() {
-            enemyPools[kind] = SpriteNodePool(
-                texture: baker.enemyTextures[kind]!,
+            let artFrames = art.monsterFrames[kind]
+            let pool = SpriteNodePool(
+                texture: artFrames?.first ?? baker.enemyTextures[kind]!,
                 capacity: Balance.enemyCap,
                 zPosition: ZBand.enemies + CGFloat(i) * 0.1,
+                blendMode: artFrames != nil ? .alpha : .add,
                 parent: self
             )
+            enemyPools[kind] = pool
         }
 
         projectilePool = SpriteNodePool(texture: baker.projectile,
@@ -103,9 +117,13 @@ final class GameScene: SKScene {
         }
         effects = EffectsRig(parent: self)
 
-        bossNode = SKSpriteNode(texture: baker.bossTexture)
+        bossNode = SKSpriteNode(texture: art.bossFrames?.first ?? baker.bossTexture)
         bossNode.zPosition = ZBand.enemies + 5
-        bossNode.blendMode = .add
+        bossNode.blendMode = art.bossFrames != nil ? .alpha : .add
+        if art.bossFrames != nil {
+            bossNode.size = CGSize(width: CGFloat(Balance.bossRadius) * 3.2,
+                                   height: CGFloat(Balance.bossRadius) * 4.8)
+        }
         bossNode.isHidden = true
         addChild(bossNode)
         for _ in 0..<2 {   // PRIME's storm-phase beams
@@ -119,7 +137,7 @@ final class GameScene: SKScene {
             addChild(b)
             bossBeamNodes.append(b)
         }
-        enemyShotPool = SpriteNodePool(texture: baker.enemyShot,
+        enemyShotPool = SpriteNodePool(texture: art.monsterShot ?? baker.enemyShot,
                                        capacity: Balance.enemyShotCap,
                                        zPosition: ZBand.projectiles + 0.4, parent: self)
         chestPool = SpriteNodePool(texture: baker.chest, capacity: 8,
@@ -245,6 +263,9 @@ final class GameScene: SKScene {
         meta = SaveStore.load()   // pick up any Lab purchases
         configureWorld()
         gameOver.hide()
+        playerRig?.reset()
+        background?.setStage(0)
+        ambientTint?.alpha = 0
     }
 
     private func bankRun(victory: Bool) {
@@ -307,8 +328,14 @@ final class GameScene: SKScene {
     }
 
     private func syncRender() {
-        let p = world.player.pos
-        playerNode.position = CGPoint(x: CGFloat(p.x), y: CGFloat(p.y))
+        let newPos = CGPoint(x: CGFloat(world.player.pos.x), y: CGFloat(world.player.pos.y))
+        let moved = hypot(newPos.x - prevPlayerPos.x, newPos.y - prevPlayerPos.y) > 0.15
+        prevPlayerPos = newPos
+        if world.projectiles.count > prevProjectileCount {
+            playerRig.attack()   // a weapon just fired — swing the sword
+        }
+        prevProjectileCount = world.projectiles.count
+        playerRig.update(dt: 1.0 / 60.0, world: world, moving: moved)
 
         // Soft-lag camera follow + decaying screen shake.
         let target = playerNode.position
@@ -327,19 +354,37 @@ final class GameScene: SKScene {
         }
         cameraNode.position = cam
         background.update(cameraPosition: cameraNode.position, viewSize: size)
+        propsRig.update(cameraPosition: cameraNode.position, viewSize: size)
 
         for pool in enemyPools.values { pool.beginFrame() }
+        // Character mode: globally-synced 2-frame walk (batching stays intact),
+        // attack frame near the player; monsters face their velocity.
+        let walkFrame = Int(world.time * 5) % 2
         for e in world.enemies {
-            let rotation: CGFloat
-            switch e.kind {
-            case .dart, .weaver:
-                rotation = CGFloat(atan2f(e.vel.y, e.vel.x)) - .pi / 2
-            case .brick, .splitter, .spitter:
-                rotation = CGFloat(e.phase) * 0.3
+            let frames = art.monsterFrames[e.kind]
+            var rotation: CGFloat = 0
+            var texture: SKTexture?
+            var size: CGSize?
+            var flip = false
+            if let frames {
+                let close = e.pos.distanceSquared(to: world.player.pos) < 90 * 90
+                texture = frames[close ? 2 : walkFrame]
+                let d = CGFloat(e.radius) * 3.2
+                size = CGSize(width: d, height: d)
+                flip = e.vel.x > 0.5   // art faces LEFT; flip when moving right
+            } else {
+                switch e.kind {
+                case .dart, .weaver:
+                    rotation = CGFloat(atan2f(e.vel.y, e.vel.x)) - .pi / 2
+                case .brick, .splitter, .spitter:
+                    rotation = CGFloat(e.phase) * 0.3
+                }
             }
+            let scale = e.elite ? CGFloat(Balance.eliteScale) : 1
             let node = enemyPools[e.kind]?.place(
                 x: CGFloat(e.pos.x), y: CGFloat(e.pos.y), rotation: rotation,
-                scale: e.elite ? CGFloat(Balance.eliteScale) : 1)
+                scale: scale, texture: texture, size: size)
+            if flip { node?.xScale = -scale }
             // White hit-flash while the enemy's flash timer runs (GOAL §4).
             if e.flash > 0 {
                 node?.color = .white
@@ -404,10 +449,23 @@ final class GameScene: SKScene {
         }
         bossNode.isHidden = false
         bossNode.position = CGPoint(x: CGFloat(boss.pos.x), y: CGFloat(boss.pos.y))
-        bossNode.zRotation = CGFloat(boss.spinAngle)
+        if let frames = art.bossFrames {
+            // Character boss: idle / slam-windup / roar frames, facing flip.
+            let frame: Int
+            if boss.chargeState == 1 { frame = 1 }
+            else if boss.phase == .storm { frame = 2 }
+            else { frame = Int(world.time * 2) % 2 == 0 ? 0 : 2 }
+            bossNode.texture = frames[frame]
+            bossNode.zRotation = 0
+        } else {
+            bossNode.zRotation = CGFloat(boss.spinAngle)
+        }
         // Telegraphs read through scale: swell before a dash, pulse in storm.
         let phaseScale: CGFloat = boss.chargeState == 1 ? 1.18 : 1.0
         bossNode.setScale(phaseScale)
+        if art.bossFrames != nil, (world.player.pos.x - boss.pos.x) > 0 {
+            bossNode.xScale = -phaseScale   // art faces LEFT; mirror toward player
+        }
 
         let storm = boss.phase == .storm
         for (k, node) in bossBeamNodes.enumerated() {
@@ -560,16 +618,33 @@ final class GameScene: SKScene {
                 gameOver.setShardsEarned(world.shardsEarned)
             case .chestDropped:
                 break
+            case .stageAdvanced(let s):
+                let names = ["DAWN WOODS", "DEEP FOREST", "CURSED WOODS"]
+                let tints: [UIColor] = [.clear,
+                                        UIColor(red: 0.1, green: 0.35, blue: 0.4, alpha: 1),
+                                        UIColor(red: 0.35, green: 0.08, blue: 0.05, alpha: 1)]
+                background.setStage(s)
+                ambientTint.color = tints[min(s, tints.count - 1)]
+                ambientTint.alpha = s == 0 ? 0 : 0.16
+                showBanner(names[min(s, names.count - 1)], color: Palette.gem)
+                effects.ring(at: playerNode.position, texture: baker.ring,
+                             fromRadius: 20, toRadius: 420, ttl: 0.7, color: Palette.gem)
+                shake = max(shake, 6)
+                AudioManager.shared.play(.levelup)
             }
         }
     }
 
-    /// PRIME entrance banner — one-shot SKAction, not a hot path.
     private func showBossBanner() {
+        showBanner("P R I M E", color: Palette.enemyLow)
+    }
+
+    /// Full-screen announcement banner — one-shot SKAction, not a hot path.
+    private func showBanner(_ text: String, color: UIColor) {
         let banner = SKLabelNode(fontNamed: "Menlo-Bold")
-        banner.text = "P R I M E"
-        banner.fontSize = 52
-        banner.fontColor = Palette.enemyLow
+        banner.text = text
+        banner.fontSize = 44
+        banner.fontColor = color
         banner.position = CGPoint(x: 0, y: 120)
         banner.zPosition = ZBand.hud + 5
         banner.alpha = 0

@@ -74,6 +74,17 @@ public enum Balance {
         4 + Float(level - 1) * 3
     }
 
+    // MARK: Stages (GOAL AMENDMENT v3: three forest biomes)
+    /// Stage boundaries in seconds: Dawn Woods → Deep Forest → Cursed Woods.
+    public static let stageStarts: [Float] = [0, 180, 360]
+    public static let stageHealFraction: Float = 0.3   // heal on crossing a gate
+
+    public static func stage(at t: Float) -> Int {
+        var s = 0
+        for (i, start) in stageStarts.enumerated() where t >= start { s = i }
+        return s
+    }
+
     // MARK: Run timeline (GOAL §4: elites 2:30/5:00/7:30, boss 9:00,
     // spawns stop 9:30, enrage 10:30, win = PRIME dies)
     public static let eliteTimes: [Float] = [150, 300, 450]

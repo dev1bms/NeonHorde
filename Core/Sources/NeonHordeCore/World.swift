@@ -96,6 +96,7 @@ public enum WorldEvent {
     case victory
     case revived
     case damageDealt(Vec2, Int)   // big hits only (≥15), ≤8/tick — damage numbers
+    case stageAdvanced(Int)       // crossed into stage N (1-based visualy, raw 0-based here)
 }
 
 public enum GameState: Equatable {
@@ -147,6 +148,9 @@ public struct World {
     var bossSpawned = false
     var wipeInProgress = false
     var damageEventsThisTick = 0
+    /// Current forest biome (0..2) — advances on the stage timeline with a
+    /// heal + rare draft + hero aura tier-up (GOAL AMENDMENT v3).
+    public private(set) var stage = 0
     var enemyHash: SpatialHash
     var spawnAccumulator: Float = 0
     public internal(set) var meta = MetaState()
@@ -599,6 +603,18 @@ public struct World {
     // MARK: - Director (full timeline: waves → elites → boss → spawns stop)
 
     private mutating func tickDirector() {
+        // Stage gates: heal, rare draft, and a fresh biome (AMENDMENT v3).
+        let currentStage = Balance.stage(at: time)
+        if currentStage > stage {
+            stage = currentStage
+            player.hp = min(player.maxHP,
+                            player.hp + player.maxHP * Balance.stageHealFraction)
+            events.append(.stageAdvanced(stage))
+            if config.draftsEnabled, pendingDraft == nil {
+                generateDraft(rare: true)
+                if pendingDraft != nil { events.append(.draftOpened) }
+            }
+        }
         // Elites at 2:30 / 5:00 / 7:30.
         if elitesSpawned < Balance.eliteTimes.count,
            time >= Balance.eliteTimes[elitesSpawned] {

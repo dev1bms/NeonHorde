@@ -1,0 +1,10 @@
+.DS_Store
+xcuserdata/
+*.xcodeproj
+DerivedData/
+build/
+*.log
+fastlane/report.xml
+fastlane/*.p8
+.claude/settings.local.json
+.build/

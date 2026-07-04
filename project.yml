@@ -1,0 +1,69 @@
+name: NeonHorde
+options:
+  bundleIdPrefix: com.belalalswerki
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    MARKETING_VERSION: 1.0.0
+    CURRENT_PROJECT_VERSION: 1
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: true
+    GCC_TREAT_WARNINGS_AS_ERRORS: false
+packages:
+  NeonHordeCore:
+    path: Core
+targets:
+  NeonHorde:
+    type: application
+    platform: iOS
+    sources:
+      - App/Sources
+    resources:
+      - App/Resources
+    dependencies:
+      - package: NeonHordeCore
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Neon Horde
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIUserInterfaceStyle: Dark
+        UIStatusBarHidden: true
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+        NSPhotoLibraryAddUsageDescription: "Save your run's share card to Photos."
+        UIApplicationSupportsIndirectInputEvents: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.belalalswerki.neonhorde
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: false
+  NeonHordeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: NeonHorde
+schemes:
+  NeonHorde:
+    build:
+      targets:
+        NeonHorde: all
+        NeonHordeTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - NeonHordeTests
+    archive:
+      config: Release

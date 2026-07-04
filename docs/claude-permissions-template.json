@@ -1,0 +1,41 @@
+{
+  "_comment": "OPTIONAL, owner opt-in: pre-approves the build/simulator/git/release commands so the autonomous run has no permission prompts under --permission-mode acceptEdits. Review it yourself, then activate with:  cp docs/claude-permissions-template.json .claude/settings.json  (must be done BEFORE launching claude — permission rules load at session start). The simpler alternative is running claude with --dangerously-skip-permissions instead.",
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild:*)",
+      "Bash(xcrun:*)",
+      "Bash(xcodegen:*)",
+      "Bash(swift:*)",
+      "Bash(swiftc:*)",
+      "Bash(git:*)",
+      "Bash(brew install:*)",
+      "Bash(brew list:*)",
+      "Bash(brew --prefix:*)",
+      "Bash(gem install --user-install:*)",
+      "Bash(fastlane:*)",
+      "Bash(bundle:*)",
+      "Bash(ruby:*)",
+      "Bash(plutil:*)",
+      "Bash(sips:*)",
+      "Bash(afinfo:*)",
+      "Bash(mkdir:*)",
+      "Bash(ls:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(touch:*)",
+      "Bash(chmod +x:*)",
+      "Bash(sleep:*)",
+      "Bash(nohup:*)",
+      "Bash(ps:*)",
+      "Bash(pgrep:*)",
+      "Bash(tail:*)",
+      "Bash(curl -sf:*)",
+      "Bash(curl -sI:*)",
+      "Bash(gh repo create:*)",
+      "Bash(gh api:*)",
+      "Bash(gh auth status)",
+      "Bash(open -a Simulator)",
+      "Bash(log stream:*)"
+    ]
+  }
+}

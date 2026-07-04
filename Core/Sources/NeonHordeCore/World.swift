@@ -97,6 +97,8 @@ public struct WorldConfig {
     public var combatEnabled = true
     /// Player takes no damage (weapon-viability tests, DEMO screenshot mode).
     public var playerInvulnerable = false
+    /// When false, level-ups never open drafts (demo/attract modes).
+    public var draftsEnabled = true
 
     public init() {}
 }
@@ -372,6 +374,7 @@ public struct World {
             player.xp -= Balance.xpToNext(level: player.level)
             player.level += 1
             events.append(.leveledUp(player.level))
+            guard config.draftsEnabled else { continue }
             if pendingDraft == nil {
                 generateDraft(rare: false)
                 if pendingDraft != nil { events.append(.draftOpened) }
@@ -509,6 +512,12 @@ public struct World {
     }
 
     // MARK: - Test hooks
+
+    /// Demo/screenshot harness: replaces the loadout with a single weapon.
+    public mutating func demoLoadout(weapon: WeaponKind, level: Int) {
+        loadout.weaponLevels = [Int](repeating: 0, count: WeaponKind.allCases.count)
+        loadout.weaponLevels[weapon.rawValue] = min(Loadout.maxLevel, max(1, level))
+    }
 
     /// Appends an enemy directly (test/demo harnesses only).
     internal mutating func testAppendEnemy(_ e: Enemy) {

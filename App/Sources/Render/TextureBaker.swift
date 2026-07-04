@@ -11,6 +11,11 @@ final class TextureBaker {
     private(set) var enemyTextures: [EnemyKind: SKTexture] = [:]
     private(set) var projectile: SKTexture!
     private(set) var gem: SKTexture!
+    private(set) var blade: SKTexture!          // orbit blades
+    private(set) var mine: SKTexture!
+    private(set) var ring: SKTexture!           // nova / mine blast (scaled)
+    private(set) var beamSegment: SKTexture!    // stretched for lances/beams/arcs
+    private(set) var cardBG: SKTexture!         // draft card background
     private(set) var joystickBase: SKTexture!
     private(set) var joystickKnob: SKTexture!
     private(set) var gridTile: SKTexture!
@@ -35,6 +40,11 @@ final class TextureBaker {
         projectile = bakeGlow(shape: .circle, radius: CGFloat(Balance.boltRadius),
                               color: Palette.player, glowScale: 1.6)
         gem = bakeGlow(shape: .diamond, radius: 7, color: Palette.gem, glowScale: 1.3)
+        blade = bakeGlow(shape: .triangle, radius: 11, color: Palette.player, glowScale: 1.4)
+        mine = bakeGlow(shape: .hexagon, radius: 9, color: Palette.enemyHigh, glowScale: 1.5)
+        ring = bakeRing(radius: 60, lineAlpha: 0.9, lineWidth: 5, color: Palette.player)
+        beamSegment = bakeBeamSegment()
+        cardBG = bakeCardBG()
         joystickBase = bakeRing(radius: 52, lineAlpha: 0.25)
         joystickKnob = bakeGlow(shape: .circle, radius: 18, color: Palette.ui.withAlphaComponent(0.6), glowScale: 1.3)
         gridTile = bakeGridTile(size: 256, spacing: 64)
@@ -117,12 +127,36 @@ final class TextureBaker {
         return bake(root)
     }
 
-    private func bakeRing(radius: CGFloat, lineAlpha: CGFloat) -> SKTexture {
+    private func bakeRing(radius: CGFloat, lineAlpha: CGFloat,
+                          lineWidth: CGFloat = 2, color: UIColor? = nil) -> SKTexture {
         let ring = SKShapeNode(circleOfRadius: radius)
-        ring.strokeColor = Palette.ui.withAlphaComponent(lineAlpha)
-        ring.lineWidth = 2
+        ring.strokeColor = (color ?? Palette.ui).withAlphaComponent(lineAlpha)
+        ring.lineWidth = lineWidth
         ring.fillColor = .clear
         return bake(ring)
+    }
+
+    /// 64×10 horizontal glow bar — stretch xScale for beams/arcs.
+    private func bakeBeamSegment() -> SKTexture {
+        let root = SKNode()
+        let core = SKShapeNode(rect: CGRect(x: 0, y: -2, width: 64, height: 4))
+        core.fillColor = Palette.ui
+        core.strokeColor = .clear
+        let glow = SKShapeNode(rect: CGRect(x: 0, y: -5, width: 64, height: 10))
+        glow.fillColor = Palette.player.withAlphaComponent(0.35)
+        glow.strokeColor = .clear
+        root.addChild(glow)
+        root.addChild(core)
+        return bake(root)
+    }
+
+    private func bakeCardBG() -> SKTexture {
+        let rect = CGRect(x: -170, y: -52, width: 340, height: 104)
+        let card = SKShapeNode(rect: rect, cornerRadius: 14)
+        card.fillColor = UIColor(white: 0.09, alpha: 0.96)
+        card.strokeColor = Palette.player.withAlphaComponent(0.55)
+        card.lineWidth = 1.5
+        return bake(card)
     }
 
     private func bakeGridTile(size: CGFloat, spacing: CGFloat) -> SKTexture {

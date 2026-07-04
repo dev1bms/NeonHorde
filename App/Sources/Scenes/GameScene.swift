@@ -14,13 +14,19 @@ final class GameScene: SKScene {
     private var playerNode: SKSpriteNode!
     private var enemyPools: [EnemyKind: SpriteNodePool] = [:]
     private var projectilePool: SpriteNodePool!
+    private var minePool: SpriteNodePool!
+    private var bladePool: SpriteNodePool!
+    private var beamNodes: [SKSpriteNode] = []
     private var gemPool: SpriteNodePool!
+    private var effects: EffectsRig!
     private var background: BackgroundRig!
     private let cameraNode = SKCameraNode()
     private var joystick: VirtualJoystick!
     private var hud: HUD!
     private var gameOver: GameOverOverlay!
+    private var draftOverlay: DraftOverlay!
     private var runIndex: UInt64 = 0
+    private var demoWeaponMode = false
 
     // Perf telemetry (GOAL Phase 2 acceptance)
     private var perfFrames = 0
@@ -54,13 +60,28 @@ final class GameScene: SKScene {
         projectilePool = SpriteNodePool(texture: baker.projectile,
                                         capacity: Balance.projectileCap,
                                         zPosition: ZBand.projectiles, parent: self)
+        minePool = SpriteNodePool(texture: baker.mine, capacity: 40,
+                                  zPosition: ZBand.projectiles + 0.1, parent: self)
+        bladePool = SpriteNodePool(texture: baker.blade, capacity: 8,
+                                   zPosition: ZBand.projectiles + 0.2, parent: self)
         gemPool = SpriteNodePool(texture: baker.gem, capacity: Balance.gemCap,
                                  zPosition: ZBand.gems, parent: self)
+        for _ in 0..<2 {   // prism beam (1-2 beams)
+            let b = SKSpriteNode(texture: baker.beamSegment)
+            b.anchorPoint = CGPoint(x: 0, y: 0.5)
+            b.blendMode = .add
+            b.zPosition = ZBand.projectiles + 0.3
+            b.isHidden = true
+            addChild(b)
+            beamNodes.append(b)
+        }
+        effects = EffectsRig(parent: self)
 
         joystick = VirtualJoystick(parent: cameraNode, baker: baker)
         hud = HUD(parent: cameraNode, viewSize: size,
                   safeTop: view.safeAreaInsets.top)
         gameOver = GameOverOverlay(parent: cameraNode, viewSize: size)
+        draftOverlay = DraftOverlay(parent: cameraNode, viewSize: size)
 
         configureWorld()
     }
@@ -76,6 +97,17 @@ final class GameScene: SKScene {
         #if DEBUG
         if args.contains("ALMOSTDEAD") {   // fast, deterministic death-flow check
             world.player.hp = 1
+        }
+        // DEMO_WEAPON=<n>: showcase one weapon against a converging swarm.
+        if let arg = args.first(where: { $0.hasPrefix("DEMO_WEAPON=") }),
+           let n = Int(arg.dropFirst("DEMO_WEAPON=".count)),
+           let kind = WeaponKind(rawValue: n) {
+            world.config.directorEnabled = false
+            world.config.playerInvulnerable = true
+            world.config.draftsEnabled = false
+            world.demoLoadout(weapon: kind, level: 4)
+            world.spawnStressEnemies(70)
+            demoWeaponMode = true
         }
         #endif
     }
@@ -106,11 +138,17 @@ final class GameScene: SKScene {
             world.tick(WorldInput(move: joystick.vector))
             accumulator -= step
             steps += 1
+            handleEvents()
         }
         if steps == 5 { accumulator = 0 }
         let tickMS = (CACurrentMediaTime() - tickStart) * 1000
 
+        if demoWeaponMode, world.enemies.count < 30 {
+            world.spawnStressEnemies(40)   // keep the showcase fed
+        }
+
         syncRender()
+        effects.update(dt: CGFloat(frameDT))
         recordPerf(currentTime: currentTime, tickMS: tickMS)
     }
 
@@ -142,10 +180,19 @@ final class GameScene: SKScene {
         for pool in enemyPools.values { pool.endFrame() }
 
         projectilePool.beginFrame()
+        minePool.beginFrame()
         for p in world.projectiles {
-            projectilePool.place(x: CGFloat(p.pos.x), y: CGFloat(p.pos.y))
+            if p.mine {
+                minePool.place(x: CGFloat(p.pos.x), y: CGFloat(p.pos.y),
+                               rotation: CGFloat(world.time) * 1.5)
+            } else {
+                projectilePool.place(x: CGFloat(p.pos.x), y: CGFloat(p.pos.y))
+            }
         }
         projectilePool.endFrame()
+        minePool.endFrame()
+
+        syncWeaponVisuals()
 
         gemPool.beginFrame()
         for g in world.gems {
@@ -159,8 +206,47 @@ final class GameScene: SKScene {
             : 1.0
 
         hud.update(world: world)
+    }
+
+    /// Continuous weapon visuals derived from world state each frame.
+    private func syncWeaponVisuals() {
+        bladePool.beginFrame()
+        let bladeLevel = world.loadout.level(of: .orbitBlades)
+        if bladeLevel > 0 {
+            let p = Balance.weapon(.orbitBlades, level: bladeLevel, loadout: world.loadout)
+            for k in 0..<p.count {
+                let a = world.orbitAngle + Float(k) * (2 * .pi / Float(p.count))
+                let bx = world.player.pos.x + cosApprox(a) * p.area
+                let by = world.player.pos.y + sinApprox(a) * p.area
+                bladePool.place(x: CGFloat(bx), y: CGFloat(by), rotation: CGFloat(a) + .pi)
+            }
+        }
+        bladePool.endFrame()
+
+        let beamLevel = world.loadout.level(of: .prismBeam)
+        if beamLevel > 0 {
+            let p = Balance.weapon(.prismBeam, level: beamLevel, loadout: world.loadout)
+            for (k, node) in beamNodes.enumerated() {
+                guard k < p.count else {
+                    node.isHidden = true
+                    continue
+                }
+                let a = world.beamAngle + Float(k) * .pi
+                node.isHidden = false
+                node.position = playerNode.position
+                node.zRotation = CGFloat(a)
+                node.size = CGSize(width: 500, height: CGFloat(p.area) * 2)
+            }
+        } else {
+            for node in beamNodes { node.isHidden = true }
+        }
+    }
+
+    /// World events → transient effects and overlay state changes.
+    private func handleEvents() {
         for event in world.events {
-            if case .playerDied = event {
+            switch event {
+            case .playerDied:
                 gameOver.show(world: world)
                 #if DEBUG
                 // AUTOREPLAY drives the same restart path a tap uses, so the
@@ -171,6 +257,27 @@ final class GameScene: SKScene {
                     }]))
                 }
                 #endif
+            case .draftOpened:
+                if let draft = world.pendingDraft {
+                    draftOverlay.show(draft: draft, world: world, baker: baker)
+                }
+            case .novaBurst(let center, let radius):
+                effects.ring(at: CGPoint(x: CGFloat(center.x), y: CGFloat(center.y)),
+                             texture: baker.ring, fromRadius: 20, toRadius: CGFloat(radius))
+            case .mineExploded(let center, let radius):
+                effects.ring(at: CGPoint(x: CGFloat(center.x), y: CGFloat(center.y)),
+                             texture: baker.ring, fromRadius: 10, toRadius: CGFloat(radius),
+                             ttl: 0.3, color: Palette.enemyHigh)
+            case .railLance(let origin, let dir, let length):
+                effects.beam(from: CGPoint(x: CGFloat(origin.x), y: CGFloat(origin.y)),
+                             angle: CGFloat(atan2Approx(dir.y, dir.x)),
+                             length: CGFloat(length), thickness: 14,
+                             texture: baker.beamSegment, ttl: 0.25)
+            case .chainArc(let points):
+                effects.chain(points: points.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) },
+                              texture: baker.beamSegment)
+            default:
+                break   // hits/kills/gems get their juice in Phase 7
             }
         }
     }
@@ -196,6 +303,20 @@ final class GameScene: SKScene {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         if gameOver.isVisible {
             restartRun()
+            return
+        }
+        if draftOverlay.isVisible {
+            if let touch = touches.first {
+                let tapped = nodes(at: touch.location(in: self))
+                if let index = draftOverlay.cardIndex(at: tapped) {
+                    world.applyDraft(index)
+                    draftOverlay.hide()
+                    // Queued level-ups chain straight into the next draft.
+                    if let next = world.pendingDraft {
+                        draftOverlay.show(draft: next, world: world, baker: baker)
+                    }
+                }
+            }
             return
         }
         for t in touches {

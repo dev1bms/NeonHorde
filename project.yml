@@ -23,8 +23,8 @@ targets:
     platform: iOS
     sources:
       - App/Sources
-    resources:
-      - App/Resources
+      - path: App/Resources
+        buildPhase: resources
     dependencies:
       - package: NeonHordeCore
     info:
@@ -46,6 +46,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.belalalswerki.neonhorde
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   NeonHordeTests:
     type: bundle.unit-test
     platform: iOS

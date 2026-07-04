@@ -55,6 +55,22 @@ final class GameOverOverlay {
         lab.position = CGPoint(x: 0, y: -110)
         root.addChild(lab)
 
+        let share = SKLabelNode(fontNamed: "Menlo-Bold")
+        share.text = "⇪ SHARE"
+        share.name = "shareButton"
+        share.fontSize = 17
+        share.fontColor = Palette.player
+        share.position = CGPoint(x: -90, y: -160)
+        root.addChild(share)
+
+        let menu = SKLabelNode(fontNamed: "Menlo-Bold")
+        menu.text = "≡ MENU"
+        menu.name = "menuButton"
+        menu.fontSize = 17
+        menu.fontColor = Palette.ui.withAlphaComponent(0.7)
+        menu.position = CGPoint(x: 90, y: -160)
+        root.addChild(menu)
+
         parent.addChild(root)
     }
 

@@ -31,6 +31,10 @@ final class GameScene: SKScene {
     private var draftOverlay: DraftOverlay!
     private var pauseOverlay: PauseOverlay!
     private var isPaused2 = false   // "paused" collides with SKNode.isPaused
+    private var menuOverlay: MenuOverlay!
+    private var attractMode = false
+    private var wasPlayRequested = false
+    private var attractBot = KitingBot(seed: 7)
     private var runIndex: UInt64 = 0
     private var demoWeaponMode = false
     private var meta = MetaState()
@@ -150,6 +154,7 @@ final class GameScene: SKScene {
         gameOver = GameOverOverlay(parent: cameraNode, viewSize: size)
         draftOverlay = DraftOverlay(parent: cameraNode, viewSize: size)
         pauseOverlay = PauseOverlay(parent: cameraNode, viewSize: size)
+        menuOverlay = MenuOverlay(parent: cameraNode, viewSize: size)
 
         // Backgrounding (or any interruption's resign-active) auto-pauses.
         NotificationCenter.default.addObserver(
@@ -177,12 +182,27 @@ final class GameScene: SKScene {
         let args = ProcessInfo.processInfo.arguments
         isDemoRun = args.contains("STRESS") || args.contains("BOSSDEMO")
             || args.contains { $0.hasPrefix("DEMO_WEAPON=") }
+
+        // Menu = live attract mode: a bot plays behind the title (Phase 8).
+        // Any demo/death harness boots straight into gameplay instead.
+        let harnessRun = isDemoRun || args.contains("ALMOSTDEAD") || args.contains("SHARE_DEMO")
+        if !harnessRun, runIndex == 0, !wasPlayRequested {
+            attractMode = true
+            attractBot = KitingBot(seed: world.rng.next())
+            menuOverlay?.show(meta: meta)
+        }
         if args.contains("STRESS") {
             world.config.directorEnabled = false
             world.config.combatEnabled = false
             world.spawnStressEnemies(500)
         }
         #if DEBUG
+        if args.contains("SHARE_DEMO") {   // share-sheet screenshot harness
+            run(.sequence([.wait(forDuration: 1.5), .run { [weak self] in
+                guard let self, let view = self.view else { return }
+                ShareCard.share(time: 154, kills: 218, level: 12, victory: false, from: view)
+            }]))
+        }
         if args.contains("ALMOSTDEAD") {   // fast, deterministic death-flow check
             world.player.hp = 1
             world.config.draftsEnabled = false   // unattended — a draft would freeze forever
@@ -218,7 +238,7 @@ final class GameScene: SKScene {
     }
 
     private func bankRun(victory: Bool) {
-        guard !runBanked, !isDemoRun else { return }
+        guard !runBanked, !isDemoRun, !attractMode else { return }
         runBanked = true
         meta.shards += world.shardsEarned
         meta.totalRuns += 1
@@ -253,7 +273,11 @@ final class GameScene: SKScene {
         var steps = 0
         let tickStart = CACurrentMediaTime()
         while accumulator >= step, steps < 5 {   // spiral-of-death clamp
-            world.tick(WorldInput(move: joystick.vector))
+            if attractMode, let draft = world.pendingDraft {
+                world.applyDraft(attractBot.pickDraft(draft, world: world))
+            }
+            let move = attractMode ? attractBot.move(world: world) : joystick.vector
+            world.tick(WorldInput(move: move))
             accumulator -= step
             steps += 1
             handleEvents()
@@ -427,6 +451,9 @@ final class GameScene: SKScene {
                 Haptics.shared.play(haptic)
             }
             switch event {
+            case .playerDied where attractMode, .victory where attractMode:
+                configureWorld()   // the menu's demo run just loops forever
+                return
             case .playerDied:
                 bankRun(victory: false)
                 shake = 14
@@ -467,6 +494,7 @@ final class GameScene: SKScene {
                              fromRadius: 20, toRadius: 320, ttl: 0.7, color: Palette.gem)
                 AudioManager.shared.play(.revive)
             case .draftOpened:
+                guard !attractMode else { break }   // bot picks silently in attract
                 AudioManager.shared.play(.uitick)
                 if let draft = world.pendingDraft {
                     draftOverlay.show(draft: draft, world: world, baker: baker)
@@ -564,6 +592,21 @@ final class GameScene: SKScene {
     // MARK: - Touch → joystick (camera space)
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if attractMode {
+            guard let touch = touches.first else { return }
+            switch menuOverlay.control(at: nodes(at: touch.location(in: self))) {
+            case "menu-lab":
+                let lab = UpgradeLabScene(size: size)
+                lab.scaleMode = .resizeFill
+                view?.presentScene(lab, transition: .fade(withDuration: 0.3))
+            default:   // PLAY — anywhere else on screen also starts
+                attractMode = false
+                wasPlayRequested = true
+                menuOverlay.hide()
+                restartRun()
+            }
+            return
+        }
         if pauseOverlay.isVisible {
             guard let touch = touches.first else { return }
             switch pauseOverlay.control(at: nodes(at: touch.location(in: self))) {
@@ -603,11 +646,26 @@ final class GameScene: SKScene {
             return
         }
         if gameOver.isVisible {
-            if let touch = touches.first,
-               nodes(at: touch.location(in: self)).contains(where: { $0.name == "labButton" }) {
+            guard let touch = touches.first else { return }
+            let tapped = nodes(at: touch.location(in: self))
+            if tapped.contains(where: { $0.name == "labButton" }) {
                 let lab = UpgradeLabScene(size: size)
                 lab.scaleMode = .resizeFill
                 view?.presentScene(lab, transition: .fade(withDuration: 0.3))
+                return
+            }
+            if tapped.contains(where: { $0.name == "shareButton" }), let view {
+                ShareCard.share(time: world.time, kills: world.kills,
+                                level: world.player.level,
+                                victory: world.state == .victory, from: view)
+                return
+            }
+            if tapped.contains(where: { $0.name == "menuButton" }) {
+                gameOver.hide()
+                wasPlayRequested = false
+                runIndex = 0
+                meta = SaveStore.load()
+                configureWorld()
                 return
             }
             restartRun()

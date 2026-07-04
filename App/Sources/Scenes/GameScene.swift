@@ -367,9 +367,12 @@ final class GameScene: SKScene {
             var size: CGSize?
             var flip = false
             if let frames {
+                // Last frame = attack pose; the rest form the walk cycle
+                // (sheets may carry 2..4 frames depending on slicing quality).
                 let close = e.pos.distanceSquared(to: world.player.pos) < 90 * 90
-                texture = frames[close ? 2 : walkFrame]
-                let d = CGFloat(e.radius) * 3.2
+                let walkCount = max(1, frames.count - 1)
+                texture = frames[close ? frames.count - 1 : walkFrame % walkCount]
+                let d = CGFloat(e.radius) * 5.0   // character art reads larger than hit circles
                 size = CGSize(width: d, height: d)
                 flip = e.vel.x > 0.5   // art faces LEFT; flip when moving right
             } else {
@@ -451,10 +454,11 @@ final class GameScene: SKScene {
         bossNode.position = CGPoint(x: CGFloat(boss.pos.x), y: CGFloat(boss.pos.y))
         if let frames = art.bossFrames {
             // Character boss: idle / slam-windup / roar frames, facing flip.
-            let frame: Int
+            var frame: Int
             if boss.chargeState == 1 { frame = 1 }
             else if boss.phase == .storm { frame = 2 }
             else { frame = Int(world.time * 2) % 2 == 0 ? 0 : 2 }
+            frame = min(frame, frames.count - 1)
             bossNode.texture = frames[frame]
             bossNode.zRotation = 0
         } else {

@@ -22,14 +22,17 @@ final class BackgroundRig {
 
     init(parent: SKNode, baker: TextureBaker, art: ArtLibrary, viewSize: CGSize) {
         stageGrounds = art.grounds
-        // Enough tiles to cover the largest phone + one tile margin.
+        // Enough tiles to cover the largest phone + wrap-period margin.
+        // wrapPeriod defaults to tileSize; mirror-tiled grounds repeat every
+        // TWO tiles, so they wrap at 2× and need extra coverage.
         func makeLayer(texture: SKTexture, tileSize: CGFloat, parallax: CGFloat,
                        z: CGFloat, alpha: CGFloat, blend: SKBlendMode = .add,
-                       collect: Bool = false) {
+                       collect: Bool = false, wrapPeriod: CGFloat? = nil) {
+            let period = wrapPeriod ?? tileSize
             let holder = SKNode()
             holder.zPosition = z
-            let cols = Int(ceil(viewSize.width / tileSize)) + 2
-            let rows = Int(ceil(viewSize.height / tileSize)) + 2
+            let cols = Int(ceil((viewSize.width + 2 * period) / tileSize)) + 1
+            let rows = Int(ceil((viewSize.height + 2 * period) / tileSize)) + 1
             for cx in 0..<cols {
                 for cy in 0..<rows {
                     let t = SKSpriteNode(texture: texture)
@@ -43,13 +46,25 @@ final class BackgroundRig {
                 }
             }
             parent.addChild(holder)
-            layers.append(Layer(node: holder, tileSize: tileSize, parallax: parallax))
+            layers.append(Layer(node: holder, tileSize: period, parallax: parallax))
         }
 
         if let forest = stageGrounds.first {
             // Forest mode: opaque painted ground, subtle drifting mist above it.
             makeLayer(texture: forest, tileSize: 512, parallax: 1.0,
-                      z: ZBand.grid, alpha: 1.0, blend: .alpha, collect: true)
+                      z: ZBand.grid, alpha: 1.0, blend: .alpha, collect: true,
+                      wrapPeriod: 1024)
+            // Mirror-tiling: AI grounds aren't seamless — flipping alternate
+            // tiles makes every edge meet its own reflection (seam-free by
+            // construction). Grid index parity decides the flip.
+            for tile in groundTiles {
+                let cx = Int(round(tile.position.x / 512))
+                let cy = Int(round(tile.position.y / 512))
+                tile.xScale = cx % 2 == 0 ? 1 : -1
+                tile.yScale = cy % 2 == 0 ? 1 : -1
+                if tile.xScale < 0 { tile.anchorPoint.x = 1 }
+                if tile.yScale < 0 { tile.anchorPoint.y = 1 }
+            }
             makeLayer(texture: baker.starfieldFar, tileSize: 512, parallax: 0.3,
                       z: ZBand.grid + 0.5, alpha: 0.25)   // stars double as fireflies
         } else {

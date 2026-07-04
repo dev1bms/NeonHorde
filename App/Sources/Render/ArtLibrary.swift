@@ -85,30 +85,91 @@ final class ArtLibrary {
 
     // MARK: - Helpers
 
-    private func texture(_ name: String) -> SKTexture? {
-        // Art files are bundled as loose resources (Art/<name>.png).
+    private func image(_ name: String) -> UIImage? {
         for candidate in ["\(name)", "Art/\(name)"] {
-            if let url = Bundle.main.url(forResource: candidate, withExtension: "png") {
-                if let image = UIImage(contentsOfFile: url.path) {
-                    return SKTexture(image: image)
-                }
+            if let url = Bundle.main.url(forResource: candidate, withExtension: "png"),
+               let image = UIImage(contentsOfFile: url.path) {
+                return image
             }
         }
         return nil
     }
 
-    /// Slices an N-frame single-row sheet using normalized rects (robust to
-    /// whatever pixel size the image model actually produced).
-    private func slice(_ name: String, frames: Int, fps: Double) -> AnimatedSprite? {
-        guard let sheet = texture(name) else { return nil }
-        var result: [SKTexture] = []
-        for i in 0..<frames {
-            let rect = CGRect(x: CGFloat(i) / CGFloat(frames), y: 0,
-                              width: 1 / CGFloat(frames), height: 1)
-            let frame = SKTexture(rect: rect, in: sheet)
+    private func texture(_ name: String) -> SKTexture? {
+        image(name).map { SKTexture(image: $0) }
+    }
+
+    /// Slices a single-row sheet. Cell boundaries are DETECTED from fully
+    /// transparent column gaps (the slicer tool guarantees padded cells), so
+    /// sheets may carry any frame count — a 4-frame attack with intact sword
+    /// arcs beats a 6-frame one with severed arcs. Falls back to an equal
+    /// `expected`-way split when detection looks implausible.
+    private func slice(_ name: String, frames expected: Int, fps: Double) -> AnimatedSprite? {
+        guard let img = image(name) else { return nil }
+        let sheet = SKTexture(image: img)
+        var spans = alphaColumnSpans(of: img)
+        #if DEBUG
+        print("ARTLOG \(name): image=\(Int(img.size.width))x\(Int(img.size.height)) " +
+              "scale=\(img.scale) detectedSpans=\(spans.count) expected=\(expected)")
+        #endif
+        if spans.count < 2 || spans.count > expected + 3 {
+            spans = (0..<expected).map {
+                (CGFloat($0) / CGFloat(expected), CGFloat($0 + 1) / CGFloat(expected))
+            }
+        }
+        let result: [SKTexture] = spans.map { s in
+            let frame = SKTexture(rect: CGRect(x: s.0, y: 0, width: s.1 - s.0, height: 1),
+                                  in: sheet)
             frame.filteringMode = .linear
-            result.append(frame)
+            return frame
         }
         return AnimatedSprite(frames: result, fps: fps)
+    }
+
+    /// Normalized (start, end) x-ranges of content columns, split on ≥4px
+    /// fully-transparent gaps. Reads the alpha channel once via CoreGraphics.
+    private func alphaColumnSpans(of img: UIImage) -> [(CGFloat, CGFloat)] {
+        guard let cg = img.cgImage else { return [] }
+        let w = cg.width, h = cg.height
+        guard w > 0, h > 0 else { return [] }
+        var alpha = [UInt8](repeating: 0, count: w * h)
+        guard let ctx = CGContext(data: &alpha, width: w, height: h,
+                                  bitsPerComponent: 8, bytesPerRow: w,
+                                  space: CGColorSpaceCreateDeviceGray(),
+                                  bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue) else {
+            return []
+        }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+        var columnHasContent = [Bool](repeating: false, count: w)
+        for x in 0..<w {
+            var count = 0
+            var y = 0
+            while y < h {
+                if alpha[y * w + x] > 20 { count += 1 }
+                y += 4   // sample every 4th row — plenty for gap detection
+            }
+            columnHasContent[x] = count > max(1, h / 200)
+        }
+        var spans: [(Int, Int)] = []
+        var start: Int?
+        var gap = 0
+        for x in 0..<w {
+            if columnHasContent[x] {
+                if start == nil { start = x }
+                gap = 0
+            } else if start != nil {
+                gap += 1
+                if gap >= 4 {
+                    spans.append((start!, x - gap + 1))
+                    start = nil
+                    gap = 0
+                }
+            }
+        }
+        if let s = start { spans.append((s, w)) }
+        return spans
+            .filter { $0.1 - $0.0 > w / 40 }
+            .map { (CGFloat($0.0) / CGFloat(w), CGFloat($0.1) / CGFloat(w)) }
     }
 }

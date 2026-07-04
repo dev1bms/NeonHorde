@@ -16,6 +16,8 @@ The executing agent updates this file continuously. Each phase row carries a sub
 | 9 | QA hardening | ☐ not started | — | |
 | 10 | App Store readiness | ☐ not started | — | |
 | 11 | Release gate | ☐ not started | — | gated on ~/.appstoreconnect/neonhorde.env (GOAL §8); halt (b) = write RELEASE_RUNBOOK.md + summary |
+| 8B | Forest-warrior art infra | ✅ done | Phase 8B | ArtLibrary/PlayerRig/PropsRig/stage-system; fallback mode verified (banner+tint+heal ring screenshots); 43/43 tests; AWAITING owner's ArtDrop images for final integration |
+| 8C | Audio v2 | ✅ done | Phase 8C | Forest-fantasy SFX + Karplus-Strong music + ambience bed; 11 gates PASS (loops 0.0000); ext_*.mp3 override ready for owner audio; launch clean |
 
 ## Sub-step checklists
 

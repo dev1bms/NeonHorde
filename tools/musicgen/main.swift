@@ -1,18 +1,25 @@
-// tools/musicgen/main.swift — Neon Horde music composer/renderer (GOAL §4).
+// tools/musicgen/main.swift — Neon Horde music composer/renderer (GOAL §4,
+// AMENDMENT v3 / Phase 8C: dark-fantasy forest hybrid score).
 //
-// Composes and renders two seamless stereo dark-synthwave loops entirely in
-// code (A minor, 110 BPM, shared key/tempo so they crossfade cleanly):
-//   music_main.m4a  ~2:20 — understated atmosphere: sidechain-ducked saw bass
-//                    (Am-F-C-G), subtle square 16th arpeggio, warm detuned
-//                    pad, minimal percussion (sine-thump kick, offbeat hats).
-//   music_boss.m4a  ~1:10 — heavier variant: driving eighth-note bass, faster
-//                    arp, snare + denser hats.
+// Composes and renders two seamless stereo loops entirely in code — brooding
+// hybrid orchestral-electronic in A minor at 100 BPM over a descending
+// Am–G–F–E tetrachord (shared key/tempo so they crossfade cleanly):
+//   music_main.m4a  ~2:24 — understated and atmospheric: deep A-pedal drone,
+//                    slow arpeggiated harp plucks (Karplus-Strong delay-line
+//                    strings — organic in a way raw oscillators are not),
+//                    airy detuned pad with a breath-noise layer, sparse
+//                    taiko-ish thumps, and an occasional low choir-ish swell
+//                    (detuned sine cluster, slow vibrato) every 8 bars.
+//   music_boss.m4a  ~1:07 — driving variant: pounding taiko pattern with
+//                    cracks on 2 & 4, aggressive low Karplus-Strong bass
+//                    plucks in eighths, urgent 16th sawtooth ostinato through
+//                    a resonant lowpass, and riser swells into each phrase.
 //
 // Loop seamlessness: composed in exact whole bars; rendered exactly N bars of
 // samples (plus a ring-out tail that is folded back with a 256-sample
 // equal-power crossfade of the tail into the head); all note envelopes
-// resolve inside their bar; a micro edge ramp pins the outermost samples to
-// silence so the loop point is a guaranteed zero crossing.
+// resolve inside their windows; a micro edge ramp pins the outermost samples
+// to silence so the loop point is a guaranteed zero crossing.
 //
 // Output: renders Float32 PCM stereo .caf, converts to AAC .m4a via
 // /usr/bin/afconvert, deletes the intermediate .caf.
@@ -20,9 +27,9 @@
 // Usage: swift tools/musicgen/main.swift <outputDir>
 //
 // Machine-checkable gates (GOAL §4 — the builder cannot listen): per track,
-// peak < 0.98 (mix targets -3 dBFS), 0.02 <= RMS <= 0.5, and loop continuity:
-// mean |first64 - last64| < 0.02. Prints one GATE line per file; exits
-// non-zero if any gate fails.
+// peak < 0.98 (mix targets -3 dBFS => 0.70), 0.02 <= RMS <= 0.5, and loop
+// continuity: mean |first64 - last64| < 0.02. Prints one GATE line per file;
+// exits non-zero if any gate fails.
 
 import AVFoundation
 import Foundation
@@ -30,10 +37,9 @@ import Foundation
 // MARK: - Timing
 
 let sampleRate = 44100.0
-let bpm = 110.0
-/// One bar = 4 beats at 110 BPM, rounded to a whole sample count so every
-/// track length is an exact number of bars (rounding shifts effective tempo
-/// by < 0.001%).
+let bpm = 100.0
+/// One bar = 4 beats at 100 BPM, rounded to a whole sample count so every
+/// track length is an exact number of bars (105840 samples — exact here).
 let barSamples = Int((240.0 / bpm * sampleRate).rounded())
 let beatSamples = Double(barSamples) / 4.0
 let sixteenthSamples = beatSamples / 4.0
@@ -45,15 +51,16 @@ let tailPad = 4096
 
 func hz(_ midi: Int) -> Double { 440.0 * pow(2.0, Double(midi - 69) / 12.0) }
 
-/// Am - F - C - G, one chord per bar, repeating.
-let bassRoots = [33, 29, 36, 31]                    // A1  F1  C2  G1
+/// Am - G - F - E, one chord per bar — a descending dark-fantasy tetrachord;
+/// the E major (harmonic-minor dominant) pulls the loop back into Am.
+let bassRoots = [33, 31, 29, 28]                    // A1  G1  F1  E1
 let padChords: [[Int]] = [                          // voice-led triads
     [57, 60, 64],                                   // Am: A3 C4 E4
-    [57, 60, 65],                                   // F:  A3 C4 F4
-    [55, 60, 64],                                   // C:  G3 C4 E4
     [55, 59, 62],                                   // G:  G3 B3 D4
+    [53, 57, 60],                                   // F:  F3 A3 C4
+    [52, 56, 59],                                   // E:  E3 G#3 B3
 ]
-let arpChords: [[Int]] = padChords.map { $0.map { $0 + 12 } }   // octave up
+let arpChords: [[Int]] = padChords.map { $0.map { $0 + 12 } }   // harp register
 
 // MARK: - DSP primitives
 
@@ -81,6 +88,55 @@ struct OnePoleLP {
     }
 }
 
+/// RBJ biquad (Direct Form I) — resonant lowpass for the boss ostinato and
+/// bandpass for riser/air noise. Coefficients may be re-set per sample.
+struct Biquad {
+    private var b0 = 0.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0
+    private var x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0
+
+    static func lowpass(cutoff: Double, q: Double) -> Biquad {
+        var f = Biquad()
+        f.setLowpass(cutoff: cutoff, q: q)
+        return f
+    }
+
+    static func bandpass(center: Double, q: Double) -> Biquad {
+        var f = Biquad()
+        f.setBandpass(center: center, q: q)
+        return f
+    }
+
+    mutating func setLowpass(cutoff: Double, q: Double) {
+        let w = 2.0 * .pi * min(max(cutoff, 20), 18000) / sampleRate
+        let alpha = sin(w) / (2.0 * max(q, 0.05))
+        let c = cos(w)
+        let a0 = 1.0 + alpha
+        b0 = (1.0 - c) / 2.0 / a0
+        b1 = (1.0 - c) / a0
+        b2 = b0
+        a1 = -2.0 * c / a0
+        a2 = (1.0 - alpha) / a0
+    }
+
+    mutating func setBandpass(center: Double, q: Double) {
+        let w = 2.0 * .pi * min(max(center, 20), 18000) / sampleRate
+        let alpha = sin(w) / (2.0 * max(q, 0.05))
+        let a0 = 1.0 + alpha
+        b0 = alpha / a0
+        b1 = 0
+        b2 = -alpha / a0
+        a1 = -2.0 * cos(w) / a0
+        a2 = (1.0 - alpha) / a0
+    }
+
+    mutating func process(_ x: Double) -> Double {
+        let y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+        x2 = x1; x1 = x
+        y2 = y1; y1 = y
+        return y
+    }
+}
+
 /// Attack / release envelope that always resolves at `length` samples.
 func arEnv(_ i: Int, length: Int, attack: Int, release: Int) -> Double {
     var v = 1.0
@@ -93,6 +149,42 @@ func arEnv(_ i: Int, length: Int, attack: Int, release: Int) -> Double {
 }
 
 func samples(_ seconds: Double) -> Int { Int(seconds * sampleRate) }
+
+// MARK: - Karplus-Strong plucked string
+
+/// Karplus-Strong plucked string: a lowpassed noise burst circulating in a
+/// delay line with an averaging filter — harp/lute-like plucks whose upper
+/// partials die faster than the fundamental, dramatically more organic than
+/// raw oscillators. Deterministic per (freq, seed). Higher notes decay
+/// faster, exactly like a real string.
+func pluck(freq: Double, seconds: Double, damping: Double, brightness: Double,
+           seed: UInt64) -> [Double] {
+    let period = max(2, Int((sampleRate / freq).rounded()))
+    var line = [Double](repeating: 0, count: period)
+    var noise = NoiseSource(seed: seed)
+    var shape = OnePoleLP(cutoff: brightness)
+    var mean = 0.0
+    for i in 0..<period {
+        line[i] = shape.process(noise.next())
+        mean += line[i]
+    }
+    mean /= Double(period)
+    for i in 0..<period { line[i] -= mean }         // remove DC so it rings to zero
+    let len = samples(seconds)
+    var out = [Double](repeating: 0, count: len)
+    var idx = 0
+    for i in 0..<len {
+        let cur = line[idx]
+        let nxt = line[(idx + 1) % period]
+        out[i] = cur
+        line[idx] = damping * 0.5 * (cur + nxt)
+        idx = (idx + 1) % period
+    }
+    // Short fade at the window end so every pluck resolves inside its window.
+    let rel = min(samples(0.05), len)
+    for i in 0..<rel { out[len - 1 - i] *= Double(i) / Double(rel) }
+    return out
+}
 
 // MARK: - Stereo mix buffer
 
@@ -122,80 +214,57 @@ final class StereoBuf {
     }
 }
 
-/// Sidechain-style duck: hard dip at every beat, smooth recovery over ~320 ms.
-func duck(_ absoluteIndex: Int) -> Double {
-    let tBeat = fmod(Double(absoluteIndex), beatSamples) / sampleRate
-    let x = min(1.0, tBeat / 0.32)
-    let smooth = x * x * (3.0 - 2.0 * x)
-    return 0.3 + 0.7 * smooth
-}
-
 // MARK: - Voices
 
-/// Bass: saw through a one-pole lowpass. `eighths` = driving boss pattern;
-/// otherwise a whole-bar sustain with the sidechain dip on each beat.
-func renderBass(into buf: StereoBuf, bars: Int, eighths: Bool, gain: Double) {
-    for bar in 0..<bars {
-        let freq = hz(bassRoots[bar % bassRoots.count])
-        let barStart = bar * barSamples
-        if eighths {
-            for step in 0..<8 {
-                let start = barStart + Int((Double(step) * beatSamples / 2.0).rounded())
-                let len = Int(beatSamples / 2.0 * 0.92)
-                var phase = 0.0
-                var lp = OnePoleLP(cutoff: 340)
-                var note = [Double](repeating: 0, count: len)
-                for i in 0..<len {
-                    phase += freq / sampleRate
-                    let s = lp.process(2.0 * (phase - floor(phase)) - 1.0)
-                    note[i] = s * arEnv(i, length: len, attack: samples(0.004), release: samples(0.05))
-                }
-                buf.add(note, at: start, gain: gain)
-            }
-        } else {
-            let len = barSamples
-            var phase = 0.0
-            var lp = OnePoleLP(cutoff: 240)
-            var note = [Double](repeating: 0, count: len)
-            for i in 0..<len {
-                phase += freq / sampleRate
-                let s = lp.process(2.0 * (phase - floor(phase)) - 1.0)
-                let env = arEnv(i, length: len, attack: samples(0.01), release: samples(0.06))
-                note[i] = s * env * duck(barStart + i)
-            }
-            buf.add(note, at: barStart, gain: gain)
-        }
+/// Drone: deep A pedal — detuned saw pair over a sub sine, heavily
+/// lowpassed, breathing with a slow loop-periodic swell. The pedal holds
+/// while the pad/harp walk the tetrachord above it — the brooding floor of
+/// the whole piece.
+func renderDrone(into buf: StereoBuf, bars: Int, gain: Double) {
+    let total = buf.frames
+    let n = total + tailPad
+    let root = hz(33)                                // A1
+    let freqs = [root * 0.9975, root * 1.0025, root / 2.0]
+    var phases = [0.0, 0.0, 0.0]
+    var lps = [OnePoleLP(cutoff: 170), OnePoleLP(cutoff: 170), OnePoleLP(cutoff: 120)]
+    var note = [Double](repeating: 0, count: n)
+    for i in 0..<n {
+        let cyc = Double(i) / Double(total)          // whole cycles over the loop
+        let breathe = 0.75 + 0.25 * sin(2.0 * .pi * 3.0 * cyc - .pi / 2.0)
+        phases[0] += freqs[0] / sampleRate
+        phases[1] += freqs[1] / sampleRate
+        phases[2] += freqs[2] / sampleRate
+        var s = lps[0].process(2.0 * (phases[0] - floor(phases[0])) - 1.0) * 0.5
+        s += lps[1].process(2.0 * (phases[1] - floor(phases[1])) - 1.0) * 0.5
+        s += lps[2].process(sin(2.0 * .pi * phases[2])) * 0.8
+        note[i] = s * breathe
     }
+    buf.add(note, at: 0, gain: gain)
 }
 
-/// Arpeggio: square-wave 16th notes over the chord tones, lowpassed soft.
-func renderArp(into buf: StereoBuf, bars: Int, boss: Bool, gain: Double) {
-    let pattern = boss ? [0, 3, 1, 3, 2, 3, 1, 3] : [0, 1, 2, 1]
-    let cutoff = boss ? 3000.0 : 2200.0
+/// Harp: slow arpeggiated Karplus-Strong plucks over the chord tones,
+/// sparse (rests keep it understated), panned gently side to side.
+func renderHarp(into buf: StereoBuf, bars: Int, gain: Double) {
+    let pattern = [0, 2, 1, 3, 2, 0, 3, 1]
     for bar in 0..<bars {
         let chord = arpChords[bar % arpChords.count]
-        let tones = chord + [chord[0] + 12]          // root, 3rd, 5th, root+oct
-        for step in 0..<16 {
-            let start = bar * barSamples + Int((Double(step) * sixteenthSamples).rounded())
-            let len = Int(sixteenthSamples * 0.85)
-            let midi = tones[pattern[step % pattern.count] % tones.count]
-            let freq = hz(midi)
-            let accent = step % 4 == 0 ? 1.0 : 0.72
-            var phase = 0.0
-            var lp = OnePoleLP(cutoff: cutoff)
-            var note = [Double](repeating: 0, count: len)
-            for i in 0..<len {
-                phase += freq / sampleRate
-                let s = lp.process((phase - floor(phase)) < 0.5 ? 1.0 : -1.0)
-                note[i] = s * arEnv(i, length: len, attack: samples(0.002), release: samples(0.02))
-            }
-            buf.add(note, at: start, gain: gain * accent,
-                    pan: step % 2 == 0 ? -0.25 : 0.25)
+        let tones = [chord[0], chord[1], chord[2], chord[0] + 12]
+        for step in 0..<8 {
+            if step == 5 || (step == 7 && bar % 2 == 0) { continue }   // breathe
+            let start = bar * barSamples + Int((Double(step) * beatSamples / 2.0).rounded())
+            let midi = tones[pattern[(bar + step) % pattern.count]]
+            let seed = UInt64(bar * 8 + step) &* 0x9E37 &+ 0xA11CE
+            let note = pluck(freq: hz(midi), seconds: 1.4,
+                             damping: 0.9992, brightness: 2600, seed: seed)
+            buf.add(note, at: start, gain: gain * (step % 4 == 0 ? 1.0 : 0.8),
+                    pan: step % 2 == 0 ? -0.3 : 0.3)
         }
     }
 }
 
-/// Pad: detuned saw pairs per chord tone, slow attack, heavy lowpass, quiet.
+/// Pad: detuned saw pairs per chord tone through a heavy lowpass, slow
+/// attack, plus a quiet bandpassed breath-noise layer swelling with each
+/// bar — the "air" of the forest score.
 func renderPad(into buf: StereoBuf, bars: Int, gain: Double) {
     let pans = [-0.4, 0.0, 0.4]
     for bar in 0..<bars {
@@ -204,97 +273,207 @@ func renderPad(into buf: StereoBuf, bars: Int, gain: Double) {
         let len = barSamples
         for (t, midi) in chord.enumerated() {
             let base = hz(midi)
-            for detune in [0.9965, 1.0035] {
+            for detune in [0.996, 1.004] {
                 let freq = base * detune
                 var phase = 0.0
-                var lp = OnePoleLP(cutoff: 850)
+                var lp = OnePoleLP(cutoff: 800)
                 var note = [Double](repeating: 0, count: len)
                 for i in 0..<len {
                     phase += freq / sampleRate
                     let s = lp.process(2.0 * (phase - floor(phase)) - 1.0)
                     note[i] = s * arEnv(i, length: len,
-                                        attack: samples(0.7), release: samples(0.35))
+                                        attack: samples(0.9), release: samples(0.4))
                 }
                 buf.add(note, at: barStart, gain: gain / 2.0,
                         pan: pans[t] * (detune < 1 ? 1.0 : -1.0))
             }
         }
+        var air = Biquad.bandpass(center: 2400, q: 0.7)
+        var noise = NoiseSource(seed: UInt64(bar) &+ 0xA17)
+        var breath = [Double](repeating: 0, count: len)
+        for i in 0..<len {
+            breath[i] = air.process(noise.next())
+                * arEnv(i, length: len, attack: samples(0.8), release: samples(0.5))
+        }
+        buf.add(breath, at: barStart, gain: gain * 0.35)
     }
 }
 
-/// Kick: sine thump with fast pitch drop 150 -> 44 Hz. Rendered once, reused.
-func makeKick() -> [Double] {
-    let len = samples(0.26)
+/// Choir-ish swell: detuned sine-pair cluster (A3 E4 A4) with slow vibrato
+/// and a hint of second partial, swelling in over a bar and out over the
+/// next — placed every 8 bars.
+func renderChoir(into buf: StereoBuf, bars: Int, gain: Double) {
+    var bar = 4
+    while bar + 2 <= bars {
+        let start = bar * barSamples
+        let len = barSamples * 2
+        for (k, midi) in [57, 64, 69].enumerated() {
+            for det in [0.9962, 1.0038] {
+                let f0 = hz(midi) * det
+                var phase = 0.0
+                var note = [Double](repeating: 0, count: len)
+                for i in 0..<len {
+                    let t = Double(i) / sampleRate
+                    let vib = 1.0 + 0.006 * sin(2.0 * .pi * 4.6 * t + Double(k) * 1.7)
+                    phase += f0 * vib / sampleRate
+                    let s = sin(2.0 * .pi * phase) + 0.25 * sin(4.0 * .pi * phase)
+                    note[i] = s * arEnv(i, length: len, attack: len / 2, release: len / 3)
+                }
+                buf.add(note, at: start, gain: gain / 2.0,
+                        pan: det < 1 ? -0.35 : 0.35)
+            }
+        }
+        bar += 8
+    }
+}
+
+/// Boss bass: aggressive low Karplus-Strong plucks driving in eighths with
+/// octave jumps on the offbeat pickups.
+func renderBossBass(into buf: StereoBuf, bars: Int, gain: Double) {
+    for bar in 0..<bars {
+        let root = bassRoots[bar % bassRoots.count]
+        for step in 0..<8 {
+            let start = bar * barSamples + Int((Double(step) * beatSamples / 2.0).rounded())
+            let midi = (step == 3 || step == 7) ? root + 12 : root
+            let seed = UInt64(bar * 8 + step) &* 0xB055 &+ 1
+            let note = pluck(freq: hz(midi), seconds: 0.4,
+                             damping: 0.994, brightness: 900, seed: seed)
+            buf.add(note, at: start, gain: gain * (step % 2 == 0 ? 1.0 : 0.85))
+        }
+    }
+}
+
+/// Ostinato (boss): urgent 16th sawtooth line through a resonant lowpass
+/// whose cutoff snaps open and decays within every note.
+func renderOstinato(into buf: StereoBuf, bars: Int, gain: Double) {
+    let pattern = [0, 0, 1, 0, 2, 0, 1, 0, 0, 0, 1, 2, 3, 2, 1, 0]
+    for bar in 0..<bars {
+        let chord = padChords[bar % padChords.count]
+        let tones = [chord[0] + 12, chord[1] + 12, chord[2] + 12, chord[0] + 24]
+        for step in 0..<16 {
+            let start = bar * barSamples + Int((Double(step) * sixteenthSamples).rounded())
+            let len = Int(sixteenthSamples * 0.9)
+            let freq = hz(tones[pattern[step]])
+            var phase = 0.0
+            var lp = Biquad.lowpass(cutoff: 2400, q: 2.8)
+            var note = [Double](repeating: 0, count: len)
+            for i in 0..<len {
+                let t = Double(i) / sampleRate
+                lp.setLowpass(cutoff: 900.0 + 1900.0 * exp(-t / 0.05), q: 2.8)
+                phase += freq / sampleRate
+                note[i] = lp.process(2.0 * (phase - floor(phase)) - 1.0)
+                    * arEnv(i, length: len, attack: samples(0.003), release: samples(0.03))
+            }
+            buf.add(note, at: start, gain: gain * (step % 4 == 0 ? 1.0 : 0.75),
+                    pan: step % 2 == 0 ? -0.2 : 0.2)
+        }
+    }
+}
+
+/// Risers (boss): bandpassed noise sweeping up over the last two bars of
+/// every 8-bar phrase, cut exactly at the downbeat (masked by the taiko).
+func renderRisers(into buf: StereoBuf, bars: Int, gain: Double) {
+    var bar = 6
+    while bar + 2 <= bars {
+        let start = bar * barSamples
+        let len = barSamples * 2
+        var noise = NoiseSource(seed: UInt64(bar) &* 0x9E37 &+ 0x5EED)
+        var bp = Biquad.bandpass(center: 380, q: 1.2)
+        var note = [Double](repeating: 0, count: len)
+        for i in 0..<len {
+            let x = Double(i) / Double(len)
+            bp.setBandpass(center: 380.0 * pow(3400.0 / 380.0, x), q: 1.2)
+            note[i] = bp.process(noise.next()) * x * x
+                * arEnv(i, length: len, attack: 1, release: samples(0.02))
+        }
+        buf.add(note, at: start, gain: gain)
+        bar += 8
+    }
+}
+
+// MARK: - Percussion
+
+/// Taiko: big soft-skinned drum — deep sine pitch drop + short skin-noise
+/// transient. `low` is the floor drum; the higher variant answers offbeats.
+func makeTaiko(low: Bool) -> [Double] {
+    let len = samples(0.5)
     var out = [Double](repeating: 0, count: len)
     var phase = 0.0
+    var noise = NoiseSource(seed: low ? 0x7A1C0 : 0x7A1C1)
+    var skinLP = OnePoleLP(cutoff: 1400)
+    let f0 = low ? 88.0 : 132.0
+    let f1 = low ? 38.0 : 58.0
     for i in 0..<len {
         let t = Double(i) / sampleRate
-        let f = 44.0 + (150.0 - 44.0) * exp(-t / 0.035)
+        let f = f1 + (f0 - f1) * exp(-t / 0.05)
         phase += f / sampleRate
-        let env = min(t / 0.001, 1.0) * exp(-t / 0.095)
-        out[i] = sin(2.0 * .pi * phase) * env
+        let body = sin(2.0 * .pi * phase) * min(t / 0.002, 1.0) * exp(-t / (low ? 0.16 : 0.11))
+        let skin = skinLP.process(noise.next()) * exp(-t / 0.015) * 0.35
+        out[i] = body + skin
     }
-    // Resolve exactly to zero.
     for i in 0..<samples(0.01) {
         out[len - 1 - i] *= Double(i) / Double(samples(0.01))
     }
     return out
 }
 
-/// Hat: short lowpass-differenced noise tick. Rendered once, reused.
-func makeHat() -> [Double] {
-    let len = samples(0.05)
-    var out = [Double](repeating: 0, count: len)
-    var noise = NoiseSource(seed: 0x4A7)
-    var lp = OnePoleLP(cutoff: 6000)
-    for i in 0..<len {
-        let t = Double(i) / sampleRate
-        let n = noise.next()
-        let high = n - lp.process(n)                 // crude highpass
-        out[i] = high * min(t / 0.001, 1.0) * exp(-t / 0.014)
-    }
-    return out
-}
-
-/// Snare (boss only): mid-band noise crack.
-func makeSnare() -> [Double] {
-    let len = samples(0.14)
+/// Crack: tight mid-band noise snap (rim/stick) for the boss backbeat.
+func makeCrack() -> [Double] {
+    let len = samples(0.12)
     var out = [Double](repeating: 0, count: len)
     var noise = NoiseSource(seed: 0x5A2E)
-    var lo = OnePoleLP(cutoff: 3400)
-    var cut = OnePoleLP(cutoff: 480)
+    var lo = OnePoleLP(cutoff: 3200)
+    var cut = OnePoleLP(cutoff: 700)
     for i in 0..<len {
         let t = Double(i) / sampleRate
         let n = noise.next()
         let band = lo.process(n) - cut.process(n)
-        out[i] = band * min(t / 0.001, 1.0) * exp(-t / 0.038)
+        out[i] = band * min(t / 0.001, 1.0) * exp(-t / 0.03)
     }
     return out
 }
 
-func renderPercussion(into buf: StereoBuf, bars: Int, boss: Bool,
-                      kickGain: Double, hatGain: Double, snareGain: Double) {
-    let kick = makeKick()
-    let hat = makeHat()
-    let snare = boss ? makeSnare() : []
+/// Main percussion: sparse and deep — floor taiko on each downbeat, an
+/// answering hit on the "and of 3" every other bar, a high pickup every 4th.
+func renderPercussionMain(into buf: StereoBuf, bars: Int, gain: Double) {
+    let taiko = makeTaiko(low: true)
+    let taikoHigh = makeTaiko(low: false)
+    for bar in 0..<bars {
+        let barStart = bar * barSamples
+        buf.add(taiko, at: barStart, gain: gain)
+        if bar % 2 == 1 {
+            buf.add(taiko, at: barStart + Int((2.5 * beatSamples).rounded()), gain: gain * 0.7)
+        }
+        if bar % 4 == 3 {
+            buf.add(taikoHigh, at: barStart + Int((3.5 * beatSamples).rounded()),
+                    gain: gain * 0.5, pan: 0.2)
+        }
+    }
+}
+
+/// Boss percussion: pounding — floor taiko on every beat, cracks on 2 & 4,
+/// high-drum offbeats and a double-stroke pickup into every other bar.
+func renderPercussionBoss(into buf: StereoBuf, bars: Int,
+                          gain: Double, crackGain: Double) {
+    let taiko = makeTaiko(low: true)
+    let taikoHigh = makeTaiko(low: false)
+    let crack = makeCrack()
     for bar in 0..<bars {
         let barStart = bar * barSamples
         for beat in 0..<4 {
             let beatStart = barStart + Int((Double(beat) * beatSamples).rounded())
-            buf.add(kick, at: beatStart, gain: kickGain)
-            if boss {
-                // Hats on every eighth, offbeats accented; snare on 2 and 4.
-                buf.add(hat, at: beatStart, gain: hatGain * 0.6, pan: 0.15)
-                buf.add(hat, at: beatStart + Int((beatSamples / 2.0).rounded()),
-                        gain: hatGain, pan: 0.2)
-                if beat == 1 || beat == 3 {
-                    buf.add(snare, at: beatStart, gain: snareGain, pan: -0.05)
-                }
-            } else {
-                // Soft hat on the offbeat only.
-                buf.add(hat, at: beatStart + Int((beatSamples / 2.0).rounded()),
-                        gain: hatGain, pan: 0.15)
+            buf.add(taiko, at: beatStart, gain: gain * (beat == 0 ? 1.0 : 0.85))
+            if beat == 1 || beat == 3 {
+                buf.add(crack, at: beatStart, gain: crackGain, pan: -0.1)
             }
+        }
+        buf.add(taikoHigh, at: barStart + Int((1.5 * beatSamples).rounded()),
+                gain: gain * 0.45, pan: 0.2)
+        buf.add(taikoHigh, at: barStart + Int((3.5 * beatSamples).rounded()),
+                gain: gain * 0.5, pan: 0.25)
+        if bar % 2 == 1 {
+            buf.add(taikoHigh, at: barStart + Int((3.75 * beatSamples).rounded()),
+                    gain: gain * 0.4, pan: 0.15)
         }
     }
 }
@@ -381,23 +560,33 @@ func gate(url: URL, name: String) -> Bool {
     var frames = 0
     do {
         let file = try AVAudioFile(forReading: url)
-        guard let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
-                                         frameCapacity: AVAudioFrameCount(file.length)) else {
-            return false
+        let channelCount = Int(file.processingFormat.channelCount)
+        guard channelCount > 0,
+              let chunk = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                           frameCapacity: 1 << 16) else { return false }
+        var first = [[Double]](repeating: [], count: channelCount)
+        var last = [[Double]](repeating: [], count: channelCount)
+        // AVAudioFile.read(into:) may return fewer frames than requested on
+        // large files — stream in chunks until the whole file is consumed.
+        while file.framePosition < file.length {
+            try file.read(into: chunk)
+            let m = Int(chunk.frameLength)
+            guard m > 0, let channels = chunk.floatChannelData else { break }
+            for c in 0..<channelCount {
+                for i in 0..<m {
+                    let s = Double(channels[c][i])
+                    peak = max(peak, abs(s))
+                    sumSquares += s * s
+                    if first[c].count < 64 { first[c].append(s) }
+                    last[c].append(s)
+                }
+                if last[c].count > 64 { last[c].removeFirst(last[c].count - 64) }
+            }
+            frames += m
         }
-        try file.read(into: pcm)
-        frames = Int(pcm.frameLength)
-        guard frames > 128, let channels = pcm.floatChannelData else { return false }
-        let channelCount = Int(pcm.format.channelCount)
+        guard frames > 128 else { return false }
         for c in 0..<channelCount {
-            for i in 0..<frames {
-                let s = Double(channels[c][i])
-                peak = max(peak, abs(s))
-                sumSquares += s * s
-            }
-            for i in 0..<64 {
-                loopDelta += abs(Double(channels[c][i]) - Double(channels[c][frames - 64 + i]))
-            }
+            for i in 0..<64 { loopDelta += abs(first[c][i] - last[c][i]) }
         }
         sumSquares /= Double(channelCount)
         loopDelta /= Double(64 * channelCount)
@@ -428,27 +617,31 @@ func convertToM4A(caf: URL, m4a: URL) throws {
 
 // MARK: - Tracks
 
-/// music_main — 64 bars (~2:20). Understated: restraint beats busy.
+/// music_main — 60 bars (~2:24). Understated and atmospheric: restraint
+/// beats busy. Drone floor, sparse harp plucks, airy pad, deep sparse taiko,
+/// choir swell every 8 bars.
 func renderMain() -> StereoBuf {
-    let bars = 64
+    let bars = 60
     let buf = StereoBuf(bars: bars)
-    renderBass(into: buf, bars: bars, eighths: false, gain: 0.30)
-    renderArp(into: buf, bars: bars, boss: false, gain: 0.045)
-    renderPad(into: buf, bars: bars, gain: 0.055)
-    renderPercussion(into: buf, bars: bars, boss: false,
-                     kickGain: 0.42, hatGain: 0.05, snareGain: 0)
+    renderDrone(into: buf, bars: bars, gain: 0.32)
+    renderHarp(into: buf, bars: bars, gain: 0.20)
+    renderPad(into: buf, bars: bars, gain: 0.06)
+    renderPercussionMain(into: buf, bars: bars, gain: 0.50)
+    renderChoir(into: buf, bars: bars, gain: 0.05)
     return buf
 }
 
-/// music_boss — 32 bars (~1:10), same key/BPM so the two loops crossfade.
+/// music_boss — 28 bars (~1:07), same key/BPM so the two loops crossfade.
+/// Driving: pounding taiko, KS bass eighths, resonant ostinato, risers.
 func renderBoss() -> StereoBuf {
-    let bars = 32
+    let bars = 28
     let buf = StereoBuf(bars: bars)
-    renderBass(into: buf, bars: bars, eighths: true, gain: 0.30)
-    renderArp(into: buf, bars: bars, boss: true, gain: 0.06)
+    renderDrone(into: buf, bars: bars, gain: 0.22)
+    renderBossBass(into: buf, bars: bars, gain: 0.26)
+    renderOstinato(into: buf, bars: bars, gain: 0.07)
     renderPad(into: buf, bars: bars, gain: 0.05)
-    renderPercussion(into: buf, bars: bars, boss: true,
-                     kickGain: 0.46, hatGain: 0.07, snareGain: 0.16)
+    renderPercussionBoss(into: buf, bars: bars, gain: 0.55, crackGain: 0.20)
+    renderRisers(into: buf, bars: bars, gain: 0.10)
     return buf
 }
 

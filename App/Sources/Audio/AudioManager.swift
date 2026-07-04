@@ -2,18 +2,26 @@ import AVFoundation
 import UIKit
 import NeonHordeCore
 
-/// Runtime audio engine (GOAL §4 Audio & Haptics). ONE AVAudioEngine drives
-/// everything: a small round-robin pool of AVAudioPlayerNode SFX voices plus
-/// two looping music players (main / boss) crossfaded by game intensity.
+/// Runtime audio engine (GOAL §4 Audio & Haptics, AMENDMENT v3 / Phase 8C).
+/// ONE AVAudioEngine drives everything: a small round-robin pool of
+/// AVAudioPlayerNode SFX voices, two looping music players (main / boss)
+/// crossfaded by game intensity, and a third looping player for the forest
+/// ambience bed (tools/sfxgen ambience_forest.caf) at low gain.
 /// All SFX .caf files (tools/sfxgen) are preloaded into AVAudioPCMBuffers at
 /// start; each shot is a scheduleBuffer on the next voice — lowest latency,
 /// per-sound volume, one code path with music. Never
 /// SKAction.playSoundFileNamed (no volume control, memory quirks).
 ///
+/// Owner overrides (AMENDMENT v3): every SFX / music / ambience resource
+/// first looks for a bundled "ext_<name>.mp3" (AI-generated audio dropped
+/// via ArtDrop and copied into the bundle at integration time) and prefers
+/// it over the generated file; absent overrides fall back exactly as before.
+///
 /// Session is `.ambient` (never interrupts the user's own music); when
-/// `secondaryAudioShouldBeSilencedHint` is set, game music mutes but SFX
-/// stay. Every failure path no-ops gracefully so the game runs fine with no
-/// audio hardware or missing assets (simulator safety).
+/// `secondaryAudioShouldBeSilencedHint` is set, game music AND the ambience
+/// bed mute but one-shot SFX stay. Every failure path no-ops gracefully so
+/// the game runs fine with no audio hardware or missing assets (simulator
+/// safety).
 final class AudioManager {
     static let shared = AudioManager()
 
@@ -29,6 +37,16 @@ final class AudioManager {
     private static let throttleInterval: CFTimeInterval = 0.05
     private static let crossfadeDuration: Double = 1.5
     private static let musicVolume: Float = 0.85
+    /// The forest bed sits low under the music (its file is also rendered at
+    /// a low ~0.07 RMS by the tools/sfxgen ambience gate).
+    private static let ambienceVolume: Float = 0.5
+    /// Canonical format for the shared SFX voice pool. Generated .caf SFX
+    /// are already mono 44.1 kHz Float32; owner ext_*.mp3 overrides are
+    /// converted on load so any buffer can play on any round-robin voice.
+    private static let sfxFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                                 sampleRate: 44100,
+                                                 channels: 1,
+                                                 interleaved: false)
 
     /// Per-sound gain: frequent sounds sit low, punctuation sounds sit high.
     private static let gains: [SFX: Float] = [
@@ -43,10 +61,12 @@ final class AudioManager {
     private var nextVoice = 0
     private let musicMain = AVAudioPlayerNode()
     private let musicBoss = AVAudioPlayerNode()
+    private let ambiencePlayer = AVAudioPlayerNode()
 
     private var sfxBuffers: [SFX: AVAudioPCMBuffer] = [:]
     private var mainBuffer: AVAudioPCMBuffer?
     private var bossBuffer: AVAudioPCMBuffer?
+    private var ambienceBuffer: AVAudioPCMBuffer?
 
     private var started = false
     private var musicOn = true
@@ -77,7 +97,8 @@ final class AudioManager {
         configureSession()
         loadBuffers()
         // Nothing to play (e.g. assets not generated yet) — stay dormant.
-        guard !sfxBuffers.isEmpty || mainBuffer != nil || bossBuffer != nil else { return }
+        guard !sfxBuffers.isEmpty || mainBuffer != nil || bossBuffer != nil
+                || ambienceBuffer != nil else { return }
 
         buildGraph()
         observeNotifications()
@@ -152,6 +173,7 @@ final class AudioManager {
 
     func setSFXOn(_ on: Bool) {
         sfxOn = on
+        applyMusicVolumes()    // the diegetic ambience bed follows this toggle
     }
 
     // MARK: - Setup
@@ -168,18 +190,35 @@ final class AudioManager {
 
     private func loadBuffers() {
         for sfx in SFX.allCases {
-            sfxBuffers[sfx] = loadBuffer(resource: sfx.rawValue, ext: "caf")
+            sfxBuffers[sfx] = loadBuffer(resource: sfx.rawValue, ext: "caf",
+                                         convertTo: Self.sfxFormat)
         }
         mainBuffer = loadBuffer(resource: "music_main", ext: "m4a")
         bossBuffer = loadBuffer(resource: "music_boss", ext: "m4a")
+        ambienceBuffer = loadBuffer(resource: "ambience_forest", ext: "caf")
+    }
+
+    /// Resolves an audio resource with owner-override support (AMENDMENT v3):
+    /// a bundled "ext_<name>.mp3" — AI-generated audio dropped via ArtDrop
+    /// and copied into the bundle at integration time (e.g. ext_laser.mp3,
+    /// ext_music_main.mp3, ext_ambience_forest.mp3) — is preferred over the
+    /// generated file. Falls back to the generated resource, then to nil
+    /// (every caller no-ops gracefully), exactly as before.
+    private func loadBuffer(resource: String, ext: String,
+                            convertTo canonical: AVAudioFormat? = nil) -> AVAudioPCMBuffer? {
+        if let url = Bundle.main.url(forResource: "ext_" + resource, withExtension: "mp3"),
+           let buffer = canonicalized(decodeFully(url), canonical) {
+            return buffer
+        }
+        guard let url = Bundle.main.url(forResource: resource, withExtension: ext) else {
+            return nil
+        }
+        return canonicalized(decodeFully(url), canonical)
     }
 
     /// Decodes an audio resource fully into memory (AAC music included — a
     /// preloaded buffer scheduled with .loops is the only gapless path).
-    private func loadBuffer(resource: String, ext: String) -> AVAudioPCMBuffer? {
-        guard let url = Bundle.main.url(forResource: resource, withExtension: ext) else {
-            return nil
-        }
+    private func decodeFully(_ url: URL) -> AVAudioPCMBuffer? {
         do {
             let file = try AVAudioFile(forReading: url)
             guard file.length > 0,
@@ -193,9 +232,38 @@ final class AudioManager {
         }
     }
 
+    /// Converts a buffer to the canonical SFX pool format when needed (mp3
+    /// overrides may be stereo / a different sample rate; every buffer must
+    /// match the format its shared voice was connected with).
+    private func canonicalized(_ buffer: AVAudioPCMBuffer?,
+                               _ canonical: AVAudioFormat?) -> AVAudioPCMBuffer? {
+        guard let buffer = buffer else { return nil }
+        guard let canonical = canonical, buffer.format != canonical else { return buffer }
+        guard let converter = AVAudioConverter(from: buffer.format, to: canonical) else {
+            return nil
+        }
+        let ratio = canonical.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
+        guard let out = AVAudioPCMBuffer(pcmFormat: canonical,
+                                         frameCapacity: capacity) else { return nil }
+        var fed = false
+        var convError: NSError?
+        let status = converter.convert(to: out, error: &convError) { _, outStatus in
+            if fed {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            fed = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+        return status == .error || out.frameLength == 0 ? nil : out
+    }
+
     private func buildGraph() {
         let mixer = engine.mainMixerNode
-        if let format = sfxBuffers.values.first?.format {
+        if !sfxBuffers.isEmpty,
+           let format = Self.sfxFormat ?? sfxBuffers.values.first?.format {
             for _ in 0..<Self.voiceCount {
                 let voice = AVAudioPlayerNode()
                 engine.attach(voice)
@@ -211,10 +279,15 @@ final class AudioManager {
             engine.attach(musicBoss)
             engine.connect(musicBoss, to: mixer, format: buffer.format)
         }
+        if let buffer = ambienceBuffer {
+            engine.attach(ambiencePlayer)
+            engine.connect(ambiencePlayer, to: mixer, format: buffer.format)
+        }
     }
 
-    /// (Re)schedules both music loops from the top and applies volumes.
-    /// Loops are scheduled with .loops for gapless playback (GOAL §4).
+    /// (Re)schedules both music loops and the ambience bed from the top and
+    /// applies volumes. Loops are scheduled with .loops for gapless playback
+    /// (GOAL §4).
     private func startMusic() {
         guard engine.isRunning else { return }
         if let buffer = mainBuffer {
@@ -227,16 +300,28 @@ final class AudioManager {
             musicBoss.scheduleBuffer(buffer, at: nil, options: .loops)
             musicBoss.play()
         }
+        if let buffer = ambienceBuffer {
+            ambiencePlayer.stop()
+            ambiencePlayer.scheduleBuffer(buffer, at: nil, options: .loops)
+            ambiencePlayer.play()
+        }
         applyMusicVolumes()
     }
 
-    /// Equal-power blend of the two loops, gated by the music toggle and the
-    /// other-audio silence hint.
+    /// Equal-power blend of the two music loops plus the ambience bed, gated
+    /// by the toggles and the other-audio silence hint.
+    ///
+    /// Ambience policy: the forest bed is diegetic (the world itself, not
+    /// score), so it follows the SFX toggle — a player who mutes music but
+    /// keeps SFX still hears the forest. As a *continuous* bed, though, it
+    /// defers to the user's own audio exactly like music does; only one-shot
+    /// SFX play over a podcast.
     private func applyMusicVolumes() {
         let audible = musicOn && !otherAudioSilencesMusic
         let base = audible ? Self.musicVolume : 0
         musicMain.volume = base * Float(cos(crossfade * .pi / 2))
         musicBoss.volume = base * Float(sin(crossfade * .pi / 2))
+        ambiencePlayer.volume = sfxOn && !otherAudioSilencesMusic ? Self.ambienceVolume : 0
     }
 
     // MARK: - Session notifications

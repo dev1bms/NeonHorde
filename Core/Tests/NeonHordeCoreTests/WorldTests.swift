@@ -61,6 +61,21 @@ final class WorldTests: XCTestCase {
         XCTAssertLessThan(perTick, 4.0, "World.tick averaged \(perTick) ms at 500 enemies")
     }
 
+    /// Worst case: all 500 enemies clumped in a few cells. The neighbor cap
+    /// must keep tick cost bounded (this regressed in simulator stress runs).
+    func testTickBudgetInDenseClump() {
+        var w = World(seed: 8)
+        w.spawnStressEnemies(500)
+        w.debugClump(at: Vec2(10, 10))
+        let input = WorldInput()
+        for _ in 0..<30 { w.tick(input) }   // warm up inside the clump
+        let ticks = 300
+        let start = DispatchTime.now().uptimeNanoseconds
+        for _ in 0..<ticks { w.tick(input) }
+        let perTick = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6 / Double(ticks)
+        XCTAssertLessThan(perTick, 4.0, "clumped World.tick averaged \(perTick) ms")
+    }
+
     func testSinApproxAccuracy() {
         for i in 0..<1000 {
             let x = Float(i) * 0.02 - 10

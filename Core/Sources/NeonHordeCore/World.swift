@@ -111,23 +111,37 @@ public struct World {
                                desired.y + desired.x * sway).normalized
             }
 
-            // Soft separation from neighbors (spatial hash query).
+            // Soft separation from neighbors, capped per entity so dense
+            // clumps can't degrade to O(n²) (see PERF regression, Phase 2).
             var push = Vec2.zero
+            var visited = 0
             let sep = Balance.enemySeparationRadius
             let selfX = e.pos.x, selfY = e.pos.y
-            enemyHash.forEachNeighbor(x: selfX, y: selfY, radius: sep) { id, nx, ny in
-                guard id != Int32(i) else { return }
+            enemyHash.forEachNeighborUntil(x: selfX, y: selfY, radius: sep) { id, nx, ny in
+                guard id != Int32(i) else { return true }
                 let dx = selfX - nx, dy = selfY - ny
                 let d2 = dx * dx + dy * dy
-                guard d2 > 1e-4, d2 < sep * sep else { return }
+                guard d2 > 1e-4, d2 < sep * sep else { return true }
                 let d = d2.squareRoot()
                 let strength = (1 - d / sep)
                 push += Vec2(dx / d, dy / d) * strength
+                visited += 1
+                return visited < Balance.separationNeighborCap
             }
 
             e.vel = desired * stats.speed + push.clamped(to: 1) * Balance.enemySeparationPush
             e.pos += e.vel * Balance.dt
             enemies[i] = e
+        }
+    }
+
+    /// Test hook: teleports every enemy into a tight clump (worst-case
+    /// separation load). Internal — reachable only via @testable import.
+    internal mutating func debugClump(at p: Vec2) {
+        for i in enemies.indices {
+            let jx = rng.float(in: -4...4)
+            let jy = rng.float(in: -4...4)
+            enemies[i].pos = Vec2(p.x + jx, p.y + jy)
         }
     }
 

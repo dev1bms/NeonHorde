@@ -65,6 +65,18 @@ public struct SpatialHash {
     /// Body receives (id, entityX, entityY).
     public func forEachNeighbor(x: Float, y: Float, radius: Float,
                                 _ body: (Int32, Float, Float) -> Void) {
+        forEachNeighborUntil(x: x, y: y, radius: radius) { id, ex, ey in
+            body(id, ex, ey)
+            return true
+        }
+    }
+
+    /// Like `forEachNeighbor`, but the body returns `false` to stop early.
+    /// Dense-clump guard: callers cap accepted neighbors so per-entity cost
+    /// stays bounded even when hundreds share a cell (deterministic — chain
+    /// order is insertion-defined).
+    public func forEachNeighborUntil(x: Float, y: Float, radius: Float,
+                                     _ body: (Int32, Float, Float) -> Bool) {
         let r2 = radius * radius
         let minCX = cellCoord(x - radius), maxCX = cellCoord(x + radius)
         let minCY = cellCoord(y - radius), maxCY = cellCoord(y + radius)
@@ -81,7 +93,7 @@ public struct SpatialHash {
                     if cellCoord(ex) == cx, cellCoord(ey) == cy {
                         let dx = ex - x, dy = ey - y
                         if dx * dx + dy * dy <= r2 {
-                            body(slotID[i], ex, ey)
+                            if !body(slotID[i], ex, ey) { return }
                         }
                     }
                     slot = nextSlot[i]

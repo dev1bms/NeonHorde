@@ -53,6 +53,7 @@ public enum Balance {
     // MARK: Enemy behavior
     public static let enemySeparationRadius: Float = 22
     public static let enemySeparationPush: Float = 60   // pt/s of push at full overlap
+    public static let separationNeighborCap = 8         // dense-clump O(n²) guard
     public static let spawnMargin: Float = 60           // pt beyond screen half-diagonal
     public static let spawnHeadingExclusion: Float = 150 // never spawn this close to player heading (GOAL §3)
 }

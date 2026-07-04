@@ -246,6 +246,13 @@ final class GameScene: SKScene {
             world.spawnStressEnemies(70)
             demoWeaponMode = true
         }
+        // STAGE2DEMO: deep-forest biome showcase (store screenshot 07).
+        if args.contains("STAGE2DEMO") {
+            world.demoStrongLoadout()
+            world.demoJumpClock(to: 200)
+            world.config.draftsEnabled = false
+            world.config.playerInvulnerable = true
+        }
         // STOREDRAFT: a real early run that opens the level-up draft at ~6s.
         if args.contains("STOREDRAFT") {
             world.demoStrongLoadout()

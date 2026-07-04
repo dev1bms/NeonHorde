@@ -54,16 +54,21 @@ final class BackgroundRig {
             makeLayer(texture: forest, tileSize: 512, parallax: 1.0,
                       z: ZBand.grid, alpha: 1.0, blend: .alpha, collect: true,
                       wrapPeriod: 1024)
-            // Mirror-tiling: AI grounds aren't seamless — flipping alternate
-            // tiles makes every edge meet its own reflection (seam-free by
-            // construction). Grid index parity decides the flip.
-            for tile in groundTiles {
-                let cx = Int(round(tile.position.x / 512))
-                let cy = Int(round(tile.position.y / 512))
-                tile.xScale = cx % 2 == 0 ? 1 : -1
-                tile.yScale = cy % 2 == 0 ? 1 : -1
-                if tile.xScale < 0 { tile.anchorPoint.x = 1 }
-                if tile.yScale < 0 { tile.anchorPoint.y = 1 }
+            // The stage grounds are generated as SEAMLESS tileables (verified
+            // offline: wrap-edge diff 4–12/255), so straight repetition looks
+            // most organic. If future drops aren't seamless, set this true to
+            // mirror alternate tiles (seam-free for any texture, but visibly
+            // kaleidoscopic).
+            let mirrorGrounds = false
+            if mirrorGrounds {
+                for tile in groundTiles {
+                    let cx = Int(round(tile.position.x / 512))
+                    let cy = Int(round(tile.position.y / 512))
+                    tile.xScale = cx % 2 == 0 ? 1 : -1
+                    tile.yScale = cy % 2 == 0 ? 1 : -1
+                    if tile.xScale < 0 { tile.anchorPoint.x = 1 }
+                    if tile.yScale < 0 { tile.anchorPoint.y = 1 }
+                }
             }
             makeLayer(texture: baker.starfieldFar, tileSize: 512, parallax: 0.3,
                       z: ZBand.grid + 0.5, alpha: 0.25)   // stars double as fireflies

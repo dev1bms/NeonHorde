@@ -2,6 +2,36 @@
 /// Bots live in Core (not tests) so future tuning tools can reuse them.
 public protocol BotPolicy {
     mutating func move(world: World) -> Vec2
+    /// Returns the draft card index to pick. Default: sensible-player heuristic.
+    mutating func pickDraft(_ draft: Draft, world: World) -> Int
+}
+
+public extension BotPolicy {
+    /// "Sensible player" heuristic: grab new weapons until 3 are owned, then
+    /// level owned weapons, then damage-flavored passives.
+    mutating func pickDraft(_ draft: Draft, world: World) -> Int {
+        func score(_ c: UpgradeChoice) -> Int {
+            switch c {
+            case .weapon(let w):
+                let owned = world.loadout.level(of: w) > 0
+                if !owned && world.loadout.ownedWeaponCount < 3 { return 100 }
+                return owned ? 80 : 40
+            case .passive(let p):
+                switch p {
+                case .damage, .cooldown, .projectileCount: return 60
+                case .maxHP, .armor: return 50
+                default: return 30
+                }
+            }
+        }
+        var best = 0
+        var bestScore = -1
+        for (i, c) in draft.choices.enumerated() where score(c) > bestScore {
+            bestScore = score(c)
+            best = i
+        }
+        return best
+    }
 }
 
 /// Baseline "fresh player": drifts in a random direction, re-rolling every
@@ -65,11 +95,21 @@ public struct RunResult {
 }
 
 /// Runs a full headless game. ~3–4 orders of magnitude faster than realtime.
-public func simulateRun(seed: UInt64, policy: BotPolicy, maxTicks: Int = 36_000) -> RunResult {
+/// `declineDrafts` pins the run to the starter weapon (baseline comparisons).
+public func simulateRun(seed: UInt64, policy: BotPolicy, maxTicks: Int = 36_000,
+                        declineDrafts: Bool = false) -> RunResult {
     var world = World(seed: seed)
     var bot = policy
     var tick = 0
     while tick < maxTicks, world.state == .playing {
+        if let draft = world.pendingDraft {
+            if declineDrafts {
+                world.declineDraft()
+            } else {
+                world.applyDraft(bot.pickDraft(draft, world: world))
+            }
+            continue   // draft resolution consumes no simulated time
+        }
         world.tick(WorldInput(move: bot.move(world: world)))
         tick += 1
     }

@@ -71,17 +71,23 @@ public enum Balance {
     public static let magnetPullSpeed: Float = 420
     /// XP required to advance FROM the given level (1-based).
     public static func xpToNext(level: Int) -> Float {
-        5 + Float(level - 1) * 4
+        4 + Float(level - 1) * 3
     }
 
     // MARK: Director v1 (escalating spawn timeline; retuned in Phase 5)
-    /// Spawns per second at time t.
+    /// Spawns per second at time t. Gentle early (power fantasy builds), the
+    /// squeeze accelerates after 4:00 so no build can idle forever.
     public static func spawnRate(at t: Float) -> Float {
-        0.8 + t * 0.035                     // ~0.8/s at start → ~7/s at 3:00
+        let base = 0.8 + t * 0.02           // ~0.8/s at start → ~7/s at 5:00
+        let lateSqueeze = t > 240 ? (t - 240) * 0.045 : 0
+        return base + lateSqueeze           // ~12/s at 6:00, ~19/s at 8:00
     }
-    /// Enemy HP multiplier over the run.
+    /// Enemy HP multiplier over the run. Accelerates after 5:00 — at the
+    /// enemy cap the spawner swaps rather than adds, so late pressure must
+    /// come from per-enemy toughness.
     public static func hpScale(at t: Float) -> Float {
-        1 + t / 120
+        let late = t > 300 ? (t - 300) / 90 : 0
+        return 1 + t / 180 + late
     }
     /// Kind mix weights over time (dart-heavy early, mixed later).
     public static func spawnWeights(at t: Float) -> [(EnemyKind, Float)] {

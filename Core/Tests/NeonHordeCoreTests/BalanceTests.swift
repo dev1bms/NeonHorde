@@ -13,7 +13,8 @@ final class BalanceTests: XCTestCase {
         var deaths: [Float] = []
         for seed in 1...20 {
             let r = simulateRun(seed: UInt64(seed * 7919),
-                                policy: RandomWalkBot(seed: UInt64(seed)))
+                                policy: RandomWalkBot(seed: UInt64(seed)),
+                                declineDrafts: true)   // starter-bolt-only floor
             XCTAssertTrue(r.died, "seed \(seed): random-walk bot must not survive a full run")
             deaths.append(r.survivedSeconds)
         }

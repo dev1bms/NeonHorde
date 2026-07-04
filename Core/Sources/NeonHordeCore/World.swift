@@ -31,6 +31,9 @@ public struct Projectile {
     public var radius: Float
     public var life: Float       // remaining seconds
     public var pierce: Int       // remaining enemies it may pass through
+    public var homing = false    // seeker swarm steering
+    public var mine = false      // stationary, proximity-triggered
+    public var aoe: Float = 0    // mine blast radius
 }
 
 public struct Gem {
@@ -47,7 +50,12 @@ public struct Player {
     public var facing: Vec2 = Vec2(1, 0)   // last nonzero move direction
     public var xp: Float = 0
     public var level: Int = 1
-    public var boltCooldown: Float = 0
+}
+
+/// A pending level-up choice. While non-nil the simulation is frozen.
+public struct Draft {
+    public let choices: [UpgradeChoice]
+    public let rare: Bool
 }
 
 public struct WorldInput {
@@ -66,6 +74,11 @@ public enum WorldEvent {
     case gemCollected(Vec2)
     case leveledUp(Int)
     case playerDied
+    case draftOpened
+    case novaBurst(Vec2, Float)              // center, radius
+    case railLance(Vec2, Vec2, Float)        // origin, direction, length
+    case chainArc([Vec2])                    // polyline: player → chained enemies
+    case mineExploded(Vec2, Float)           // center, radius
 }
 
 public enum GameState: Equatable {
@@ -82,6 +95,8 @@ public struct WorldConfig {
     /// When false, weapons and contact damage are skipped (pure-movement
     /// harnesses: stress scene, seek tests, attract backgrounds).
     public var combatEnabled = true
+    /// Player takes no damage (weapon-viability tests, DEMO screenshot mode).
+    public var playerInvulnerable = false
 
     public init() {}
 }
@@ -90,13 +105,19 @@ public struct World {
     public private(set) var tickIndex: UInt64 = 0
     public var rng: SplitMix64
     public var config = WorldConfig()
-    public private(set) var state: GameState = .playing
+    public internal(set) var state: GameState = .playing
     public var player = Player()
-    public private(set) var enemies: [Enemy] = []
-    public private(set) var projectiles: [Projectile] = []
-    public private(set) var gems: [Gem] = []
-    public private(set) var events: [WorldEvent] = []
-    public private(set) var kills: Int = 0
+    public internal(set) var enemies: [Enemy] = []
+    public internal(set) var projectiles: [Projectile] = []
+    public internal(set) var gems: [Gem] = []
+    public internal(set) var events: [WorldEvent] = []
+    public internal(set) var kills: Int = 0
+    public internal(set) var loadout = Loadout()
+    public internal(set) var pendingDraft: Draft?
+    var queuedLevelUps = 0
+    var weaponCooldowns = [Float](repeating: 0, count: WeaponKind.allCases.count)
+    public internal(set) var orbitAngle: Float = 0
+    public internal(set) var beamAngle: Float = 0
     var enemyHash: SpatialHash
     var spawnAccumulator: Float = 0
 
@@ -110,13 +131,14 @@ public struct World {
         projectiles.reserveCapacity(Balance.projectileCap)
         gems.reserveCapacity(Balance.gemCap)
         events.reserveCapacity(64)
+        loadout.weaponLevels[WeaponKind.pulseBolt.rawValue] = 1   // starter weapon
     }
 
     // MARK: - Tick
 
     public mutating func tick(_ input: WorldInput) {
         events.removeAll(keepingCapacity: true)
-        guard state == .playing else { return }
+        guard state == .playing, pendingDraft == nil else { return }   // draft freezes time
         tickIndex &+= 1
 
         tickPlayerMovement(input)
@@ -127,7 +149,7 @@ public struct World {
         tickEnemies()
         if config.combatEnabled {
             tickContactDamage()
-            tickWeapons()
+            tickWeaponSystems()
             tickProjectiles()
             tickGems()
         }
@@ -141,7 +163,7 @@ public struct World {
 
     private mutating func tickPlayerMovement(_ input: WorldInput) {
         let move = input.move.clamped(to: 1)
-        player.pos += move * (Balance.playerSpeed * Balance.dt)
+        player.pos += move * (Balance.playerSpeed * loadout.moveSpeedMultiplier * Balance.dt)
         if move.lengthSquared > 0.01 {
             player.facing = move.normalized
         }
@@ -198,13 +220,24 @@ public struct World {
             e.vel = desired * stats.speed + push.clamped(to: 1) * Balance.enemySeparationPush + e.knock
             e.knock = e.knock * (1 - 6 * Balance.dt)   // exponential knockback decay
             e.pos += e.vel * Balance.dt
+
+            // Hard collision with the player: enemies press against the
+            // contact ring, never tunnel through the core (keeps them inside
+            // orbit-blade reach and reads correctly on screen).
+            let ringR = Balance.playerRadius + e.radius
+            let dp2 = e.pos.distanceSquared(to: player.pos)
+            if dp2 < ringR * ringR, dp2 > 1e-6 {
+                let d = dp2.squareRoot()
+                e.pos = player.pos + (e.pos - player.pos) * (ringR / d)
+            }
+
             e.phase += Balance.dt
             enemies[i] = e
         }
     }
 
     private mutating func tickContactDamage() {
-        guard player.iFrames <= 0 else { return }
+        guard !config.playerInvulnerable, player.iFrames <= 0 else { return }
         let px = player.pos.x, py = player.pos.y
         let reach = Balance.playerRadius + 18   // max enemy radius
         var hitDamage: Float = 0
@@ -220,36 +253,13 @@ public struct World {
             return true
         }
         guard hitIndex >= 0 else { return }
-        player.hp -= hitDamage
+        let effective = max(1, hitDamage - loadout.flatArmor)
+        player.hp -= effective
         player.iFrames = Balance.playerIFrames
-        events.append(.playerHit(hitDamage))
+        events.append(.playerHit(effective))
         // Knock the attacker back off the player.
         let away = (enemies[Int(hitIndex)].pos - player.pos).normalized
         enemies[Int(hitIndex)].knock = away * Balance.contactKnockback
-    }
-
-    // MARK: - Weapons (Pulse Bolt v1; generalized in Phase 4)
-
-    private mutating func tickWeapons() {
-        player.boltCooldown -= Balance.dt
-        guard player.boltCooldown <= 0, projectiles.count < Balance.projectileCap else { return }
-
-        // Nearest enemy within range (linear scan — once per shot, n ≤ 600).
-        var bestD2 = Balance.boltRange * Balance.boltRange
-        var target = -1
-        for (i, e) in enemies.enumerated() {
-            let d2 = e.pos.distanceSquared(to: player.pos)
-            if d2 < bestD2 {
-                bestD2 = d2
-                target = i
-            }
-        }
-        guard target >= 0 else { return }
-        player.boltCooldown = Balance.boltCooldown
-        let dir = (enemies[target].pos - player.pos).normalized
-        projectiles.append(Projectile(pos: player.pos, vel: dir * Balance.boltSpeed,
-                                      damage: Balance.boltDamage, radius: Balance.boltRadius,
-                                      life: Balance.boltLifetime, pierce: 0))
     }
 
     private mutating func tickProjectiles() {
@@ -260,8 +270,26 @@ public struct World {
         for i in projectiles.indices {
             var p = projectiles[i]
             guard p.life > 0 else { continue }
-            p.pos += p.vel * Balance.dt
             p.life -= Balance.dt
+
+            if p.mine {
+                tickMine(&p, scratch: &candidates)
+                projectiles[i] = p
+                continue
+            }
+
+            if p.homing {
+                // Limited-turn-rate steering toward the nearest enemy.
+                if let t = nearestEnemyIndex(to: p.pos, maxDistance: 320) {
+                    let desired = (enemies[t].pos - p.pos).normalized
+                    let speed = p.vel.length
+                    let turn: Float = 5.5 * Balance.dt
+                    let blended = Vec2(p.vel.x / max(speed, 1) + desired.x * turn,
+                                       p.vel.y / max(speed, 1) + desired.y * turn).normalized
+                    p.vel = blended * speed
+                }
+            }
+            p.pos += p.vel * Balance.dt
 
             candidates.removeAll(keepingCapacity: true)
             enemyHash.forEachNeighbor(x: p.pos.x, y: p.pos.y, radius: p.radius + 18) { id, _, _ in
@@ -284,11 +312,42 @@ public struct World {
         }
     }
 
+    private mutating func tickMine(_ mine: inout Projectile, scratch: inout [Int32]) {
+        // Armed after a short delay (mine.life counts down from 10; armed below 9.5).
+        guard mine.life < 9.5 else { return }
+        scratch.removeAll(keepingCapacity: true)
+        var triggered = false
+        enemyHash.forEachNeighborUntil(x: mine.pos.x, y: mine.pos.y, radius: 26 + 18) { [enemies] id, _, _ in
+            let e = enemies[Int(id)]
+            let rr = 26 + e.radius
+            if e.hp > 0, e.pos.distanceSquared(to: mine.pos) <= rr * rr {
+                triggered = true
+                return false
+            }
+            return true
+        }
+        guard triggered else { return }
+        scratch.removeAll(keepingCapacity: true)
+        enemyHash.forEachNeighbor(x: mine.pos.x, y: mine.pos.y, radius: mine.aoe + 18) { id, _, _ in
+            scratch.append(id)
+        }
+        for id in scratch {
+            let idx = Int(id)
+            let rr = mine.aoe + enemies[idx].radius
+            if enemies[idx].pos.distanceSquared(to: mine.pos) <= rr * rr {
+                enemies[idx].hp -= mine.damage
+            }
+        }
+        events.append(.mineExploded(mine.pos, mine.aoe))
+        mine.life = 0
+    }
+
     // MARK: - Gems
 
     private mutating func tickGems() {
         let collect2 = Balance.gemCollectRadius * Balance.gemCollectRadius
-        let magnet2 = Balance.magnetRadius * Balance.magnetRadius
+        let magnetR = Balance.magnetRadius * loadout.magnetMultiplier
+        let magnet2 = magnetR * magnetR
         for i in gems.indices {
             var g = gems[i]
             guard g.xp > 0 else { continue }
@@ -308,11 +367,17 @@ public struct World {
     }
 
     private mutating func gainXP(_ amount: Float) {
-        player.xp += amount
+        player.xp += amount * loadout.xpMultiplier
         while player.xp >= Balance.xpToNext(level: player.level) {
             player.xp -= Balance.xpToNext(level: player.level)
             player.level += 1
             events.append(.leveledUp(player.level))
+            if pendingDraft == nil {
+                generateDraft(rare: false)
+                if pendingDraft != nil { events.append(.draftOpened) }
+            } else {
+                queuedLevelUps += 1
+            }
         }
     }
 
@@ -445,6 +510,17 @@ public struct World {
 
     // MARK: - Test hooks
 
+    /// Appends an enemy directly (test/demo harnesses only).
+    internal mutating func testAppendEnemy(_ e: Enemy) {
+        guard enemies.count < Balance.enemyCap else { return }
+        enemies.append(e)
+    }
+
+    /// Drops a magnetized gem on the player (test harnesses only).
+    internal mutating func testDropGem(xp: Float) {
+        gems.append(Gem(pos: player.pos, xp: xp, magnetized: true))
+    }
+
     /// Teleports every enemy into a tight clump (worst-case separation load).
     internal mutating func debugClump(at p: Vec2) {
         for i in enemies.indices {
@@ -484,6 +560,10 @@ public struct World {
         mix(UInt64(player.xp.bitPattern))
         mix(UInt64(player.level))
         mix(UInt64(kills))
+        for l in loadout.weaponLevels { mix(UInt64(l)) }
+        for l in loadout.passiveLevels { mix(UInt64(l)) }
+        mix(UInt64(orbitAngle.bitPattern))
+        mix(UInt64(beamAngle.bitPattern))
         for e in enemies {
             mix(UInt64(e.kind.rawValue))
             mix(UInt64(e.pos.x.bitPattern))

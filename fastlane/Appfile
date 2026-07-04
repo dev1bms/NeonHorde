@@ -1,0 +1,3 @@
+app_identifier("com.belalalswerki.neonhorde")
+# Apple ID / team come from the App Store Connect API key at runtime
+# (~/.appstoreconnect/neonhorde.env) — never hardcoded here.

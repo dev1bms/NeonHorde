@@ -185,7 +185,8 @@ final class GameScene: SKScene {
 
         // Menu = live attract mode: a bot plays behind the title (Phase 8).
         // Any demo/death harness boots straight into gameplay instead.
-        let harnessRun = isDemoRun || args.contains("ALMOSTDEAD") || args.contains("SHARE_DEMO")
+        let harnessRun = isDemoRun || args.contains("ALMOSTDEAD")
+            || args.contains("SHARE_DEMO") || args.contains("STOREDRAFT")
         if !harnessRun, runIndex == 0, !wasPlayRequested {
             attractMode = true
             attractBot = KitingBot(seed: world.rng.next())
@@ -196,7 +197,9 @@ final class GameScene: SKScene {
             world.config.combatEnabled = false
             world.spawnStressEnemies(500)
         }
-        #if DEBUG
+        // Demo/screenshot harness args — compiled into Release too (App Store
+        // screenshots need a clean build without the DEBUG stats overlay).
+        // They are inert unless explicitly passed at launch.
         if args.contains("SHARE_DEMO") {   // share-sheet screenshot harness
             run(.sequence([.wait(forDuration: 1.5), .run { [weak self] in
                 guard let self, let view = self.view else { return }
@@ -225,7 +228,14 @@ final class GameScene: SKScene {
             world.spawnStressEnemies(70)
             demoWeaponMode = true
         }
-        #endif
+        // STOREDRAFT: a real early run that opens the level-up draft at ~6s.
+        if args.contains("STOREDRAFT") {
+            world.demoStrongLoadout()
+            run(.sequence([.wait(forDuration: 6), .run { [weak self] in
+                self?.world.demoOpenDraft()
+                self?.handleEvents()
+            }]))
+        }
     }
 
     private var isDemoRun = false

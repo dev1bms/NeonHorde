@@ -1,0 +1,63 @@
+# Neon Horde release lanes (GOAL Phase 10/11).
+# Auth: App Store Connect API key from ~/.appstoreconnect/neonhorde.env
+# (ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_PATH). Cloud signing — no certs
+# in the repo, no Xcode GUI.
+
+default_platform(:ios)
+
+ENV["DEVELOPER_DIR"] = "/Applications/Xcode.app/Contents/Developer"
+
+def asc_key
+  app_store_connect_api_key(
+    key_id: ENV.fetch("ASC_KEY_ID"),
+    issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+    key_filepath: ENV.fetch("ASC_KEY_PATH")
+  )
+end
+
+platform :ios do
+  desc "Regenerate the Xcode project and build a signed App Store archive"
+  lane :build_release do
+    sh("cd .. && xcodegen generate")
+    build_app(
+      project: "NeonHorde.xcodeproj",
+      scheme: "NeonHorde",
+      export_method: "app-store",
+      xcargs: [
+        "-allowProvisioningUpdates",
+        "-authenticationKeyPath #{ENV.fetch('ASC_KEY_PATH')}",
+        "-authenticationKeyID #{ENV.fetch('ASC_KEY_ID')}",
+        "-authenticationKeyIssuerID #{ENV.fetch('ASC_ISSUER_ID')}",
+      ].join(" ")
+    )
+  end
+
+  desc "Upload the current build to TestFlight"
+  lane :beta do
+    api_key = asc_key
+    build_release
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: false   # poll ASC — don't trust exit codes
+    )
+  end
+
+  desc "Push metadata + screenshots and submit for review"
+  lane :release do
+    api_key = asc_key
+    build_release
+    upload_to_app_store(
+      api_key: api_key,
+      force: true,                    # skip interactive HTML preview
+      precheck_include_in_app_purchases: false,
+      submit_for_review: true,
+      automatic_release: true,
+      submission_information: {
+        add_id_info_uses_idfa: false,
+        export_compliance_uses_encryption: false,
+      },
+      price_tier: 0,
+      run_precheck_before_submit: false   # precheck needs Spaceship features beyond the key
+    )
+  end
+end

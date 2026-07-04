@@ -17,6 +17,13 @@ final class GameViewController: UIViewController {
         view = skView
     }
 
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        // Games legitimately keep the screen awake — joystick play can go
+        // long stretches without new touch events (GOAL Phase 9 soak).
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         // Present once the view has its real size — creating the scene in

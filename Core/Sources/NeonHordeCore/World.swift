@@ -721,6 +721,13 @@ public struct World {
         testJumpClock(to: seconds)
     }
 
+    /// Demo/screenshot harness: opens a draft immediately.
+    public mutating func demoOpenDraft() {
+        guard pendingDraft == nil else { return }
+        generateDraft(rare: false)
+        if pendingDraft != nil { events.append(.draftOpened) }
+    }
+
     /// Demo/screenshot harness: grants a strong mixed loadout.
     public mutating func demoStrongLoadout() {
         loadout.weaponLevels[WeaponKind.pulseBolt.rawValue] = 5

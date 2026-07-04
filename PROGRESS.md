@@ -5,7 +5,7 @@ The executing agent updates this file continuously. Each phase row carries a sub
 | Phase | Title | Status | Final commit | Evidence / Notes |
 |---|---|---|---|---|
 | 0 | Toolchain bootstrap | ✅ done | (pre-repo) | Xcode 26.6 (17F113), iOS 26.5 runtime, XcodeGen 2.45.4, gh=dev1bms. SIM_LARGE=32BDDE26 (iPhone 17 Pro Max), SIM_SMALL=F6EDD3C9 (iPhone SE 3rd gen) — UDIDs in scripts/env.sh |
-| 1 | Project scaffold | ☐ not started | — | |
+| 1 | Project scaffold | ✅ done | Phase 1 | Xcode 26.6 build clean; Core pkg tests 4/4 native; centered placeholder scene screenshot-verified on NH-Large @60fps; Info.plist via XcodeGen info block incl. PrivacyInfo.xcprivacy, NSPhotoLibraryAddUsageDescription, dark style |
 | 2 | Core engine | ☐ not started | — | |
 | 3 | Combat loop | ☐ not started | — | |
 | 4 | Upgrade draft system | ☐ not started | — | |

@@ -93,6 +93,7 @@ public enum WorldEvent {
     case bossPhase(Int)
     case bossDied
     case victory
+    case revived
 }
 
 public enum GameState: Equatable {
@@ -105,6 +106,8 @@ public struct WorldConfig {
     /// Half-extents of the visible viewport in world points (camera-centered);
     /// the Director spawns just beyond this. Set by the scene at startup.
     public var viewHalf = Vec2(215, 466)
+    /// Overdrive tier (0 = base game).
+    public var overdriveTier = 0
     /// Disabled in stress/demo harnesses.
     public var directorEnabled = true
     /// When false, weapons and contact damage are skipped (pure-movement
@@ -143,11 +146,20 @@ public struct World {
     var wipeInProgress = false
     var enemyHash: SpatialHash
     var spawnAccumulator: Float = 0
+    public internal(set) var meta = MetaState()
+    public internal(set) var revivesLeft = 0
+    /// Shards banked by the run so far (drops + time trickle).
+    public var shardsEarned: Int {
+        let trickle = Int(time / 10)
+        let mult = meta.shardMultiplier * Overdrive.shardMult(tier: config.overdriveTier)
+        return Int(Float(shardDrops + trickle) * mult)
+    }
+    var shardDrops = 0
 
     /// Elapsed simulated seconds.
     public var time: Float { Float(tickIndex) * Balance.dt }
 
-    public init(seed: UInt64) {
+    public init(seed: UInt64, meta: MetaState = MetaState()) {
         rng = SplitMix64(seed: seed)
         enemyHash = SpatialHash(cellSize: Balance.cellSize, capacity: Balance.enemyCap)
         enemies.reserveCapacity(Balance.enemyCap)
@@ -155,6 +167,11 @@ public struct World {
         gems.reserveCapacity(Balance.gemCap)
         events.reserveCapacity(64)
         loadout.weaponLevels[WeaponKind.pulseBolt.rawValue] = 1   // starter weapon
+        self.meta = meta
+        player.maxHP = Balance.playerMaxHP + meta.bonusMaxHP
+        player.hp = player.maxHP
+        player.level += meta.startLevels
+        revivesLeft = meta.revives
     }
 
     // MARK: - Tick
@@ -187,14 +204,28 @@ public struct World {
             return
         }
         if player.hp <= 0 {
-            state = .dead
-            events.append(.playerDied)
+            if revivesLeft > 0 {
+                revivesLeft -= 1
+                player.hp = player.maxHP * 0.5
+                player.iFrames = 2.0
+                // Shockwave clears breathing room.
+                for i in enemies.indices
+                where enemies[i].pos.distanceSquared(to: player.pos) < 220 * 220 {
+                    enemies[i].hp = -1
+                }
+                enemyShots.removeAll(keepingCapacity: true)
+                events.append(.revived)
+            } else {
+                state = .dead
+                events.append(.playerDied)
+            }
         }
     }
 
     private mutating func tickPlayerMovement(_ input: WorldInput) {
         let move = input.move.clamped(to: 1)
-        player.pos += move * (Balance.playerSpeed * loadout.moveSpeedMultiplier * Balance.dt)
+        let speed = Balance.playerSpeed * loadout.moveSpeedMultiplier * meta.speedMultiplier
+        player.pos += move * (speed * Balance.dt)
         if move.lengthSquared > 0.01 {
             player.facing = move.normalized
         }
@@ -264,7 +295,8 @@ public struct World {
                 return visited < Balance.separationNeighborCap
             }
 
-            e.vel = desired * stats.speed + push.clamped(to: 1) * Balance.enemySeparationPush + e.knock
+            let odSpeed = Overdrive.enemySpeedMult(tier: config.overdriveTier)
+            e.vel = desired * (stats.speed * odSpeed) + push.clamped(to: 1) * Balance.enemySeparationPush + e.knock
             e.knock = e.knock * (1 - 6 * Balance.dt)   // exponential knockback decay
             e.pos += e.vel * Balance.dt
 
@@ -393,7 +425,7 @@ public struct World {
 
     private mutating func tickGems() {
         let collect2 = Balance.gemCollectRadius * Balance.gemCollectRadius
-        let magnetR = Balance.magnetRadius * loadout.magnetMultiplier
+        let magnetR = Balance.magnetRadius * loadout.magnetMultiplier * meta.magnetMultiplier
         let magnet2 = magnetR * magnetR
         for i in gems.indices {
             var g = gems[i]
@@ -475,6 +507,7 @@ public struct World {
                 if e.elite {
                     chests.append(Chest(pos: e.pos))
                     events.append(.chestDropped(e.pos))
+                    shardDrops += 25
                 }
                 if e.kind == .splitter, !e.elite, !wipeInProgress {
                     spawnSplitChildren(at: e.pos)
@@ -563,7 +596,8 @@ public struct World {
         }
         // Regular spawns stop at 9:30 — the fight is the finale.
         guard time < Balance.spawnsStopTime else { return }
-        spawnAccumulator += Balance.spawnRate(at: time) * Balance.dt
+        spawnAccumulator += Balance.spawnRate(at: time)
+            * Overdrive.spawnRateMult(tier: config.overdriveTier) * Balance.dt
         while spawnAccumulator >= 1 {
             spawnAccumulator -= 1
             spawnDirectorEnemy()
@@ -636,8 +670,9 @@ public struct World {
         let pos = player.pos + Vec2(cosApprox(angle), sinApprox(angle)) * ringRadius
 
         let stats = Balance.stats(for: kind)
-        enemies.append(Enemy(kind: kind, pos: pos,
-                             hp: stats.hp * Balance.hpScale(at: time),
+        let hp = stats.hp * Balance.hpScale(at: time)
+            * Overdrive.enemyHPMult(tier: config.overdriveTier)
+        enemies.append(Enemy(kind: kind, pos: pos, hp: hp,
                              radius: stats.radius,
                              phase: rng.float(in: 0...(2 * Float.pi))))
     }

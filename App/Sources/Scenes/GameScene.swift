@@ -31,6 +31,8 @@ final class GameScene: SKScene {
     private var draftOverlay: DraftOverlay!
     private var runIndex: UInt64 = 0
     private var demoWeaponMode = false
+    private var meta = MetaState()
+    private var runBanked = false
 
     // Perf telemetry (GOAL Phase 2 acceptance)
     private var perfFrames = 0
@@ -40,7 +42,14 @@ final class GameScene: SKScene {
 
     override func didMove(to view: SKView) {
         backgroundColor = Palette.uiBackground
-        baker = TextureBaker(view: view)
+        meta = SaveStore.load()
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("GRANTSHARDS") {
+            meta.shards += 500
+            SaveStore.save(meta)
+        }
+        #endif
+        baker = TextureBaker(view: view, playerShape: meta.selectedShape)
 
         camera = cameraNode
         addChild(cameraNode)
@@ -113,8 +122,13 @@ final class GameScene: SKScene {
     }
 
     private func configureWorld() {
+        world = World(seed: world.rng.next(), meta: meta)   // reseed with meta applied
         world.config.viewHalf = Vec2(Float(size.width) / 2, Float(size.height) / 2)
+        world.config.overdriveTier = UserSelections.overdriveTier
+        runBanked = false
         let args = ProcessInfo.processInfo.arguments
+        isDemoRun = args.contains("STRESS") || args.contains("BOSSDEMO")
+            || args.contains { $0.hasPrefix("DEMO_WEAPON=") }
         if args.contains("STRESS") {
             world.config.directorEnabled = false
             world.config.combatEnabled = false
@@ -123,6 +137,7 @@ final class GameScene: SKScene {
         #if DEBUG
         if args.contains("ALMOSTDEAD") {   // fast, deterministic death-flow check
             world.player.hp = 1
+            world.config.draftsEnabled = false   // unattended — a draft would freeze forever
         }
         // BOSSDEMO: strong build, clock at 8:57 — PRIME arrives in seconds.
         if args.contains("BOSSDEMO") {
@@ -145,11 +160,28 @@ final class GameScene: SKScene {
         #endif
     }
 
+    private var isDemoRun = false
+
     private func restartRun() {
         runIndex += 1
-        world = World(seed: 0x4E33304E &+ runIndex &* 0x9E3779B9)
+        meta = SaveStore.load()   // pick up any Lab purchases
         configureWorld()
         gameOver.hide()
+    }
+
+    private func bankRun(victory: Bool) {
+        guard !runBanked, !isDemoRun else { return }
+        runBanked = true
+        meta.shards += world.shardsEarned
+        meta.totalRuns += 1
+        meta.bestKills = max(meta.bestKills, world.kills)
+        meta.bestSurvivalSeconds = max(meta.bestSurvivalSeconds, world.time)
+        if victory {
+            meta.victories += 1
+            meta.highestOverdriveBeaten = max(meta.highestOverdriveBeaten,
+                                              world.config.overdriveTier)
+        }
+        SaveStore.save(meta)
     }
 
     // MARK: - Loop
@@ -321,7 +353,9 @@ final class GameScene: SKScene {
         for event in world.events {
             switch event {
             case .playerDied:
+                bankRun(victory: false)
                 gameOver.show(world: world)
+                gameOver.setShardsEarned(world.shardsEarned)
                 #if DEBUG
                 // AUTOREPLAY drives the same restart path a tap uses, so the
                 // death→restart loop is screenshot-verifiable headlessly.
@@ -351,7 +385,9 @@ final class GameScene: SKScene {
                 effects.chain(points: points.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) },
                               texture: baker.beamSegment)
             case .victory:
+                bankRun(victory: true)
                 gameOver.showVictory(world: world)
+                gameOver.setShardsEarned(world.shardsEarned)
             case .bossSpawned:
                 // Arena-wipe shockwave sells the entrance.
                 effects.ring(at: playerNode.position, texture: baker.ring,
@@ -382,6 +418,13 @@ final class GameScene: SKScene {
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         if gameOver.isVisible {
+            if let touch = touches.first,
+               nodes(at: touch.location(in: self)).contains(where: { $0.name == "labButton" }) {
+                let lab = UpgradeLabScene(size: size)
+                lab.scaleMode = .resizeFill
+                view?.presentScene(lab, transition: .fade(withDuration: 0.3))
+                return
+            }
             restartRun()
             return
         }

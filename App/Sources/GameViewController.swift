@@ -22,7 +22,16 @@ final class GameViewController: UIViewController {
         // Present once the view has its real size — creating the scene in
         // viewDidLoad positions everything against pre-layout bounds.
         guard skView.scene == nil, view.bounds.width > 0 else { return }
-        let scene = GameScene(size: view.bounds.size)
+        let scene: SKScene
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("OPENLAB") {
+            scene = UpgradeLabScene(size: view.bounds.size)
+        } else {
+            scene = GameScene(size: view.bounds.size)
+        }
+        #else
+        scene = GameScene(size: view.bounds.size)
+        #endif
         scene.scaleMode = .resizeFill
         skView.presentScene(scene)
     }

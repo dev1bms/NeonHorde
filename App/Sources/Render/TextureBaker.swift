@@ -26,13 +26,18 @@ final class TextureBaker {
     private(set) var starfieldFar: SKTexture!
     private(set) var digits: [SKTexture] = []      // 0-9 glyphs for damage numbers
 
-    init(view: SKView) {
+    private let playerShape: Int
+
+    init(view: SKView, playerShape: Int = 0) {
         self.view = view
+        self.playerShape = playerShape
         bakeAll()
     }
 
     private func bakeAll() {
-        player = bakeGlow(shape: .circle, radius: CGFloat(Balance.playerRadius), color: Palette.player)
+        let shapes: [Shape] = [.circle, .triangle, .star, .hexagon]
+        player = bakeGlow(shape: shapes[min(playerShape, shapes.count - 1)],
+                          radius: CGFloat(Balance.playerRadius), color: Palette.player)
         for kind in EnemyKind.allCases {
             let stats = Balance.stats(for: kind)
             let color = Palette.enemy(threat: CGFloat(stats.threat))
@@ -64,7 +69,7 @@ final class TextureBaker {
     // MARK: - Shapes
 
     enum Shape {
-        case circle, triangle, square, pentagon, diamond, hexagon
+        case circle, triangle, square, pentagon, diamond, hexagon, star
     }
 
     private func shape(for kind: EnemyKind) -> Shape {
@@ -97,6 +102,16 @@ final class TextureBaker {
             return polygon(sides: 5, radius: r)
         case .hexagon:
             return polygon(sides: 6, radius: r)
+        case .star:
+            let p = CGMutablePath()
+            for i in 0..<10 {
+                let radius = i % 2 == 0 ? r : r * 0.45
+                let a = CGFloat(i) / 10 * 2 * .pi + .pi / 2
+                let pt = CGPoint(x: cos(a) * radius, y: sin(a) * radius)
+                if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+            }
+            p.closeSubpath()
+            return p
         }
     }
 

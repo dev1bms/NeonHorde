@@ -143,6 +143,7 @@ extension World {
         if b.hp <= 0 {
             boss = nil
             kills += 1
+            shardDrops += Balance.bossShards
             state = .victory
             events.append(.bossDied)
         } else {

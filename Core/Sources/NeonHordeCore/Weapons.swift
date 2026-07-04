@@ -5,7 +5,8 @@ extension World {
         for kind in WeaponKind.allCases {
             let level = loadout.level(of: kind)
             guard level > 0 else { continue }
-            let params = Balance.weapon(kind, level: level, loadout: loadout)
+            var params = Balance.weapon(kind, level: level, loadout: loadout)
+            params.damage *= meta.damageMultiplier   // permanent AMPLIFIER ranks
 
             switch kind {
             case .orbitBlades:

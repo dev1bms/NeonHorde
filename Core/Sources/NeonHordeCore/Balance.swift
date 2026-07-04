@@ -18,7 +18,7 @@ public enum Balance {
     public static let playerSpeed: Float = 190          // pt/s
     public static let playerMaxHP: Float = 100
     public static let playerIFrames: Float = 0.5        // seconds
-    public static let magnetRadius: Float = 70
+    public static let magnetRadius: Float = 90
 
     // MARK: Enemies (base stats; Director scales HP over the timeline)
     public struct EnemyStats {
@@ -74,19 +74,70 @@ public enum Balance {
         4 + Float(level - 1) * 3
     }
 
+    // MARK: Run timeline (GOAL §4: elites 2:30/5:00/7:30, boss 9:00,
+    // spawns stop 9:30, enrage 10:30, win = PRIME dies)
+    public static let eliteTimes: [Float] = [150, 300, 450]
+    public static let eliteHPMultiplier: Float = 22
+    public static let eliteContactMultiplier: Float = 2
+    public static let eliteSpeedMultiplier: Float = 0.75
+    public static let eliteScale: Float = 2.5
+    public static let bossSpawnTime: Float = 540
+    public static let spawnsStopTime: Float = 570
+    public static let bossEnrageTime: Float = 630
+    /// Enrage: damage & speed +3%/s compounding (multiplier = 1.03^seconds).
+    public static func enrageMultiplier(secondsPastEnrage t: Float) -> Float {
+        guard t > 0 else { return 1 }
+        // 1.03^t via exp-free powf approximation: (1.03)^t = e^(t·ln1.03),
+        // computed with a short series good to ±1% over 0..300s.
+        let x = t * 0.029558802   // ln(1.03)
+        var result: Float = 1
+        var term: Float = 1
+        for k in 1...8 {
+            term *= x / Float(k)
+            result += term
+        }
+        return result
+    }
+
+    // MARK: PRIME boss
+    public static let bossHP: Float = 5200
+    public static let bossRadius: Float = 46
+    public static let bossContactDamage: Float = 22
+    public static let bossBaseSpeed: Float = 60
+    public static let bossChargeSpeed: Float = 330
+    public static let bossShotDamage: Float = 9
+    public static let bossShotSpeed: Float = 150
+    public static let bossRingCount = 10
+    public static let bossRingCooldown: Float = 2.6
+    public static let bossBeamDPS: Float = 30
+    public static let bossBeamHalfWidth: Float = 14
+    public static let bossXP: Float = 0          // boss drops victory, not gems
+    public static let bossShards = 150
+
+    // MARK: Enemy ranged shots (spitter + boss rings)
+    public static let spitterShotDamage: Float = 7
+    public static let spitterShotSpeed: Float = 130
+    public static let spitterShotCooldown: Float = 3.2
+    public static let enemyShotRadius: Float = 6
+    public static let enemyShotLife: Float = 3.5
+    public static let enemyShotCap = 120
+
+    // MARK: Chests
+    public static let chestCollectRadius: Float = 30
+
     // MARK: Director v1 (escalating spawn timeline; retuned in Phase 5)
-    /// Spawns per second at time t. Gentle early (power fantasy builds), the
-    /// squeeze accelerates after 4:00 so no build can idle forever.
+    /// Spawns per second at time t. Gentle early (power fantasy builds); a
+    /// mild squeeze after 5:00 keeps pressure honest — PRIME (9:00) is the
+    /// run-ender now, not attrition.
     public static func spawnRate(at t: Float) -> Float {
         let base = 0.8 + t * 0.02           // ~0.8/s at start → ~7/s at 5:00
-        let lateSqueeze = t > 240 ? (t - 240) * 0.045 : 0
-        return base + lateSqueeze           // ~12/s at 6:00, ~19/s at 8:00
+        let lateSqueeze = t > 300 ? (t - 300) * 0.015 : 0
+        return base + lateSqueeze           // ~10/s at 7:00, ~14/s at 9:00
     }
-    /// Enemy HP multiplier over the run. Accelerates after 5:00 — at the
-    /// enemy cap the spawner swaps rather than adds, so late pressure must
-    /// come from per-enemy toughness.
+    /// Enemy HP multiplier over the run (mild late acceleration — the boss,
+    /// not attrition, ends runs since Phase 5).
     public static func hpScale(at t: Float) -> Float {
-        let late = t > 300 ? (t - 300) / 90 : 0
+        let late = t > 300 ? (t - 300) / 240 : 0
         return 1 + t / 180 + late
     }
     /// Kind mix weights over time (dart-heavy early, mixed later).

@@ -12,6 +12,9 @@ final class HUD {
     private let killsLabel = SKLabelNode(fontNamed: "Menlo-Bold")
     private let levelLabel = SKLabelNode(fontNamed: "Menlo-Bold")
     private let hpWidth: CGFloat = 150
+    private let bossBar: SKSpriteNode
+    private let bossBarBG: SKSpriteNode
+    private let bossLabel = SKLabelNode(fontNamed: "Menlo-Bold")
 
     private var lastTimerText = ""
     private var lastKills = -1
@@ -65,6 +68,27 @@ final class HUD {
         levelLabel.verticalAlignmentMode = .center
         levelLabel.position = CGPoint(x: viewSize.width / 2 - 20, y: top - 24)
         root.addChild(levelLabel)
+
+        // PRIME bar — hidden until the finale.
+        let bossWidth = viewSize.width - 80
+        bossBarBG = SKSpriteNode(color: Palette.ui.withAlphaComponent(0.15),
+                                 size: CGSize(width: bossWidth, height: 10))
+        bossBarBG.position = CGPoint(x: 0, y: top - 44)
+        bossBarBG.isHidden = true
+        root.addChild(bossBarBG)
+        bossBar = SKSpriteNode(color: Palette.enemyLow,
+                               size: CGSize(width: bossWidth, height: 10))
+        bossBar.anchorPoint = CGPoint(x: 0, y: 0.5)
+        bossBar.position = CGPoint(x: -bossWidth / 2, y: top - 44)
+        bossBar.isHidden = true
+        root.addChild(bossBar)
+        bossLabel.text = "P R I M E"
+        bossLabel.fontSize = 13
+        bossLabel.fontColor = Palette.enemyLow
+        bossLabel.verticalAlignmentMode = .center
+        bossLabel.position = CGPoint(x: 0, y: top - 60)
+        bossLabel.isHidden = true
+        root.addChild(bossLabel)
     }
 
     func update(world: World) {
@@ -85,6 +109,17 @@ final class HUD {
         if world.player.level != lastLevel {
             levelLabel.text = "LV \(world.player.level)"
             lastLevel = world.player.level
+        }
+
+        if let boss = world.boss {
+            bossBarBG.isHidden = false
+            bossBar.isHidden = false
+            bossLabel.isHidden = false
+            bossBar.xScale = CGFloat(max(0, boss.hp / boss.maxHP))
+        } else {
+            bossBarBG.isHidden = true
+            bossBar.isHidden = true
+            bossLabel.isHidden = true
         }
     }
 }

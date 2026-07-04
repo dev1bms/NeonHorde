@@ -8,7 +8,7 @@ The executing agent updates this file continuously. Each phase row carries a sub
 | 1 | Project scaffold | ✅ done | Phase 1 | Xcode 26.6 build clean; Core pkg tests 4/4 native; centered placeholder scene screenshot-verified on NH-Large @60fps; Info.plist via XcodeGen info block incl. PrivacyInfo.xcprivacy, NSPhotoLibraryAddUsageDescription, dark style |
 | 2 | Core engine | ✅ done | Phase 2 | 14 Core tests green native; stress 500 enemies: avg_fps=60.0, draws=9 (<25), avg_tick 2.4ms stable (clump O(n²) fixed via separationNeighborCap=8 + testTickBudgetInDenseClump); screenshot verified |
 | 3 | Combat loop | ✅ done | Phase 3 | 18 Core tests green; combat/death/restart screenshot-verified (RUN OVER overlay + timer/kill reset); fresh-bot deaths avg 52s min 45s across 20 seeds. NOTE: official 90-240s balance row deferred to Phase 4's upgrade-picking bot (pre-upgrade window 40-120s enforced instead — rationale in BalanceTests) |
-| 4 | Upgrade draft system | ☐ not started | — | |
+| 4 | Upgrade draft system | ✅ done | Phase 4 | 25 Core tests green; official window: fresh+drafts avg 192s (90-240 ✓); upgrades 2.56× baseline (≥2 ✓); 8 weapon demo screenshots distinct; draft UI verified; player hard-collision added (fixed orbit-blade design flaw) |
 | 5 | Run structure & boss | ☐ not started | — | |
 | 6 | Meta progression | ☐ not started | — | |
 | 7 | Juice & audio | ☐ not started | — | |

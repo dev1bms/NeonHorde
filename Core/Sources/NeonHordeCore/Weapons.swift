@@ -62,12 +62,22 @@ extension World {
             enemies[i].hp -= p.damage
             hitAny = true
         }
+        if let b = boss {   // boss damage lands via the novaBurst event splash
+            let rr = p.area + Balance.bossRadius
+            if b.pos.distanceSquared(to: player.pos) <= rr * rr { hitAny = true }
+        }
         guard hitAny else { return false }
         events.append(.novaBurst(player.pos, p.area))
         return true
     }
 
     private mutating func fireRailLance(_ p: WeaponParams) -> Bool {
+        // Boss-only endgame: lance straight at PRIME.
+        if enemies.isEmpty, let b = boss {
+            let dir = (b.pos - player.pos).normalized
+            events.append(.railLance(player.pos, dir, 600))
+            return true
+        }
         guard !enemies.isEmpty else { return false }
         let length: Float = 600
         // Pick the densest of 12 sampled directions.
@@ -132,7 +142,7 @@ extension World {
     }
 
     private mutating func fireSeekerSwarm(_ p: WeaponParams) -> Bool {
-        guard !enemies.isEmpty else { return false }
+        guard !enemies.isEmpty || boss != nil else { return false }
         for i in 0..<p.count {
             guard projectiles.count < Balance.projectileCap else { break }
             let a = rng.float(in: 0...(2 * Float.pi)) + Float(i)
@@ -215,8 +225,26 @@ extension World {
         return best >= 0 ? best : nil
     }
 
+    /// Nearest shootable position — boss included (after spawns stop, PRIME
+    /// is often the only target left; weapons must engage it).
+    func nearestTargetPosition(to pos: Vec2, maxDistance: Float) -> Vec2? {
+        var bestPos: Vec2?
+        var bestD2 = maxDistance * maxDistance
+        if let i = nearestEnemyIndex(to: pos, maxDistance: maxDistance) {
+            bestD2 = enemies[i].pos.distanceSquared(to: pos)
+            bestPos = enemies[i].pos
+        }
+        if let b = boss {
+            let d2 = b.pos.distanceSquared(to: pos)
+            if d2 < bestD2 {
+                bestPos = b.pos
+            }
+        }
+        return bestPos
+    }
+
     func directionToNearestEnemy(maxDistance: Float) -> Vec2? {
-        guard let i = nearestEnemyIndex(to: player.pos, maxDistance: maxDistance) else { return nil }
-        return (enemies[i].pos - player.pos).normalized
+        guard let target = nearestTargetPosition(to: player.pos, maxDistance: maxDistance) else { return nil }
+        return (target - player.pos).normalized
     }
 }

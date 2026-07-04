@@ -16,6 +16,9 @@ final class TextureBaker {
     private(set) var ring: SKTexture!           // nova / mine blast (scaled)
     private(set) var beamSegment: SKTexture!    // stretched for lances/beams/arcs
     private(set) var cardBG: SKTexture!         // draft card background
+    private(set) var bossTexture: SKTexture!
+    private(set) var enemyShot: SKTexture!
+    private(set) var chest: SKTexture!
     private(set) var joystickBase: SKTexture!
     private(set) var joystickKnob: SKTexture!
     private(set) var gridTile: SKTexture!
@@ -45,6 +48,11 @@ final class TextureBaker {
         ring = bakeRing(radius: 60, lineAlpha: 0.9, lineWidth: 5, color: Palette.player)
         beamSegment = bakeBeamSegment()
         cardBG = bakeCardBG()
+        bossTexture = bakeBoss()
+        enemyShot = bakeGlow(shape: .circle, radius: CGFloat(Balance.enemyShotRadius),
+                             color: Palette.enemyHigh, glowScale: 1.7)
+        chest = bakeGlow(shape: .diamond, radius: 15, color: UIColor(red: 1, green: 0.85, blue: 0.3, alpha: 1),
+                         glowScale: 1.6)
         joystickBase = bakeRing(radius: 52, lineAlpha: 0.25)
         joystickKnob = bakeGlow(shape: .circle, radius: 18, color: Palette.ui.withAlphaComponent(0.6), glowScale: 1.3)
         gridTile = bakeGridTile(size: 256, spacing: 64)
@@ -147,6 +155,27 @@ final class TextureBaker {
         glow.strokeColor = .clear
         root.addChild(glow)
         root.addChild(core)
+        return bake(root)
+    }
+
+    /// PRIME: nested rotating nonagons, magenta core with orange halo.
+    private func bakeBoss() -> SKTexture {
+        let root = SKNode()
+        let r = CGFloat(Balance.bossRadius)
+        let layers: [(scale: CGFloat, alpha: CGFloat, color: UIColor)] = [
+            (2.0, 0.10, Palette.enemyHigh),
+            (1.5, 0.20, Palette.enemyHigh),
+            (1.0, 1.00, Palette.enemyLow),
+            (0.62, 0.9, Palette.uiBackground),
+            (0.38, 1.0, Palette.enemyHigh),
+        ]
+        for (i, l) in layers.enumerated() {
+            let shape = SKShapeNode(path: polygon(sides: 9, radius: r * l.scale))
+            shape.fillColor = l.color.withAlphaComponent(l.alpha)
+            shape.strokeColor = .clear
+            shape.zRotation = CGFloat(i) * 0.2
+            root.addChild(shape)
+        }
         return bake(root)
     }
 

@@ -56,32 +56,92 @@ public struct RandomWalkBot: BotPolicy {
     }
 }
 
-/// Competent player proxy: flees the local threat centroid, with a slight
-/// orbit bias so it circles the horde instead of running to infinity.
+/// Competent player proxy: samples 16 headings, scores each by projected
+/// threat density at the lookahead point (plus gem greed and momentum), and
+/// commits to the best. A far better skill-ceiling proxy than centroid-flee.
 public struct KitingBot: BotPolicy {
     private var rng: SplitMix64
+    private var lastDir = Vec2(1, 0)
 
     public init(seed: UInt64) {
         rng = SplitMix64(seed: seed)
     }
 
     public mutating func move(world: World) -> Vec2 {
-        var threat = Vec2.zero
-        var weight: Float = 0
-        for e in world.enemies {
-            let d2 = max(e.pos.distanceSquared(to: world.player.pos), 100)
-            guard d2 < 350 * 350 else { continue }
-            let w = 1.0 / d2
-            threat += (e.pos - world.player.pos) * w
-            weight += w
+        let p = world.player.pos
+        var bestDir = Vec2.zero
+        var bestScore = -Float.greatestFiniteMagnitude
+
+        for s in 0..<16 {
+            let a = Float(s) / 16 * 2 * .pi
+            let dir = Vec2(cosApprox(a), sinApprox(a))
+            let probe = p + dir * 90   // where we'd be in ~half a second
+            var score: Float = 0
+
+            for e in world.enemies {
+                let d2 = max(e.pos.distanceSquared(to: probe), 64)
+                if d2 < 320 * 320 {
+                    // Anticipate their chase: closing enemies count double.
+                    let closing = (e.vel.x * dir.x + e.vel.y * dir.y) < 0 ? 2.0 : 1.0 as Float
+                    score -= closing * 9000 / d2
+                }
+            }
+            for shot in world.enemyShots {
+                let d2 = max(shot.pos.distanceSquared(to: probe), 64)
+                if d2 < 150 * 150 { score -= 6000 / d2 }
+            }
+            if let b = world.boss {
+                // Fight from a band (~330 pt): close enough for every weapon,
+                // far enough to react to dashes.
+                let d = b.pos.distanceSquared(to: probe).squareRoot()
+                let bandError = (d - 330) / 100
+                score -= bandError * bandError * 2.5
+                if d < 180 { score -= 4000 / max(d * d, 64) }   // hard no-fly zone
+                // Storm-phase beams sweep from spinAngle — stay out of both corridors.
+                if b.phase == .storm {
+                    for k in 0..<2 {
+                        let ba = b.spinAngle + Float(k) * .pi + 0.25   // lead the sweep
+                        let bd = Vec2(cosApprox(ba), sinApprox(ba))
+                        let rel = probe - b.pos
+                        let along = rel.x * bd.x + rel.y * bd.y
+                        let perp = abs(rel.x * bd.y - rel.y * bd.x)
+                        if along > 0, along < 700, perp < 60 {
+                            score -= 30
+                        }
+                    }
+                }
+            }
+            // Gem greed keeps builds coming online — collecting is playing.
+            for g in world.gems {
+                let d2 = max(g.pos.distanceSquared(to: probe), 100)
+                if d2 < 280 * 280 { score += 1100 / d2 }
+            }
+            // Momentum: avoid dithering.
+            score += (dir.x * lastDir.x + dir.y * lastDir.y) * 0.02
+
+            // Home anchor: kite in circles near the origin instead of fleeing
+            // to infinity — that's how humans play, and it loops the bot back
+            // through its own kill zones to harvest gems.
+            if world.boss == nil {
+                let homeD = probe.length
+                if homeD > 400 {
+                    let over = (homeD - 400) / 200
+                    score -= over * over
+                }
+            }
+
+            if score > bestScore {
+                bestScore = score
+                bestDir = dir
+            }
         }
-        guard weight > 0 else {
-            return .zero   // nothing near — stand and shoot
+
+        // If nothing threatens at all, chase gems or stand still.
+        if bestScore <= 0.05, bestScore >= -0.05 {
+            return .zero
         }
-        let away = (threat * (-1 / weight)).normalized
-        // Perpendicular bias → orbiting motion (better gem pickup).
-        let orbit = Vec2(-away.y, away.x)
-        return (away * 0.85 + orbit * 0.5).normalized
+        lastDir = bestDir
+        return bestDir
     }
 }
 

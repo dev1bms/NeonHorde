@@ -44,10 +44,28 @@ final class GameOverOverlay {
     }
 
     func show(world: World) {
+        setTitle("RUN OVER", color: Palette.enemyLow)
         let t = Int(world.time)
         (root.childNode(withName: "stats") as? SKLabelNode)?.text =
             String(format: "%d:%02d survived   ✕ %d   LV %d", t / 60, t % 60, world.kills, world.player.level)
         root.isHidden = false
+    }
+
+    func showVictory(world: World) {
+        setTitle("HORDE BROKEN", color: Palette.gem)
+        let t = Int(world.time)
+        (root.childNode(withName: "stats") as? SKLabelNode)?.text =
+            String(format: "PRIME fell at %d:%02d   ✕ %d   LV %d", t / 60, t % 60, world.kills, world.player.level)
+        root.isHidden = false
+    }
+
+    private func setTitle(_ text: String, color: UIColor) {
+        for child in root.children {
+            if let label = child as? SKLabelNode, label.fontSize == 40 {
+                label.text = text
+                label.fontColor = color
+            }
+        }
     }
 
     func hide() {

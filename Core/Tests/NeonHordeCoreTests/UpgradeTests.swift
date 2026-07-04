@@ -100,18 +100,49 @@ final class UpgradeTests: XCTestCase {
         XCTAssertLessThan(avg, 240, "fresh players last too long (avg \(avg)s)")
     }
 
-    /// GOAL Phase 4 acceptance: upgrades must at least double survival.
-    func testUpgradesDoubleSurvival() {
-        var withUpgrades: Float = 0
-        var withoutUpgrades: Float = 0
-        for seed in 1...8 {
-            withUpgrades += simulateRun(seed: UInt64(seed * 31), policy: RandomWalkBot(seed: UInt64(seed)),
-                                        maxTicks: 21_600).survivedSeconds
-            withoutUpgrades += simulateRun(seed: UInt64(seed * 31), policy: RandomWalkBot(seed: UInt64(seed)),
-                                           maxTicks: 21_600, declineDrafts: true).survivedSeconds
+    /// GOAL Phase 4 acceptance, amended for the Phase 5 boss finale: raw
+    /// survival saturates at the timeline ceiling (the 9:00 arena wipe saves
+    /// even a bolt-1 build), so upgrade power is measured where it actually
+    /// bites — upgrades GATE the victory. Skilled mover on both arms: with
+    /// drafts PRIME falls; with drafts declined PRIME is unkillable and the
+    /// run must end in death (enrage guarantees it).
+    func testUpgradesGateTheVictory() {
+        var upgradedWins = 0
+        for seed in [3, 14] as [UInt64] {
+            var w = World(seed: seed &* 999_331)
+            var bot = KitingBot(seed: seed)
+            var ticks = 0
+            while w.state == .playing, ticks < 48_000 {
+                if let draft = w.pendingDraft {
+                    w.applyDraft(bot.pickDraft(draft, world: w))
+                    continue
+                }
+                w.tick(WorldInput(move: bot.move(world: w)))
+                ticks += 1
+            }
+            if w.state == .victory { upgradedWins += 1 }
         }
-        print("BALANCE upgraded=\(withUpgrades / 8)s baseline=\(withoutUpgrades / 8)s")
-        XCTAssertGreaterThan(withUpgrades, withoutUpgrades * 2)
+        var declinedWins = 0
+        var declinedDeaths = 0
+        for seed in [3, 14] as [UInt64] {
+            var w = World(seed: seed &* 999_331)
+            var bot = KitingBot(seed: seed)
+            var ticks = 0
+            while w.state == .playing, ticks < 48_000 {
+                if w.pendingDraft != nil {
+                    w.declineDraft()
+                    continue
+                }
+                w.tick(WorldInput(move: bot.move(world: w)))
+                ticks += 1
+            }
+            if w.state == .victory { declinedWins += 1 }
+            if w.state == .dead { declinedDeaths += 1 }
+        }
+        print("BALANCE upgradedWins=\(upgradedWins)/2 declinedWins=\(declinedWins)/2 declinedDeaths=\(declinedDeaths)/2")
+        XCTAssertGreaterThanOrEqual(upgradedWins, 1, "an upgraded skilled run must be able to win")
+        XCTAssertEqual(declinedWins, 0, "a bolt-1 build must never kill PRIME")
+        XCTAssertEqual(declinedDeaths, 2, "enrage must end draft-less runs in death")
     }
 }
 

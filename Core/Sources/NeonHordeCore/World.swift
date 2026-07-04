@@ -12,6 +12,8 @@ public struct Enemy {
     public var radius: Float
     public var phase: Float      // per-entity motion phase (weaver sine, wander)
     public var knock: Vec2       // decaying knockback velocity
+    public var elite = false     // 2.5× chest-dropper
+    public var cool: Float = 0   // ranged-attack cooldown (spitter)
 
     public init(kind: EnemyKind, pos: Vec2, hp: Float, radius: Float, phase: Float) {
         self.kind = kind
@@ -22,6 +24,11 @@ public struct Enemy {
         self.phase = phase
         self.knock = .zero
     }
+}
+
+public struct Chest {
+    public var pos: Vec2
+    public var collected = false
 }
 
 public struct Projectile {
@@ -79,11 +86,19 @@ public enum WorldEvent {
     case railLance(Vec2, Vec2, Float)        // origin, direction, length
     case chainArc([Vec2])                    // polyline: player → chained enemies
     case mineExploded(Vec2, Float)           // center, radius
+    case eliteSpawned(Vec2)
+    case chestDropped(Vec2)
+    case chestCollected(Vec2)
+    case bossSpawned
+    case bossPhase(Int)
+    case bossDied
+    case victory
 }
 
 public enum GameState: Equatable {
     case playing
     case dead
+    case victory   // PRIME died — the only win condition
 }
 
 public struct WorldConfig {
@@ -120,6 +135,12 @@ public struct World {
     var weaponCooldowns = [Float](repeating: 0, count: WeaponKind.allCases.count)
     public internal(set) var orbitAngle: Float = 0
     public internal(set) var beamAngle: Float = 0
+    public internal(set) var boss: Boss?
+    public internal(set) var enemyShots: [Projectile] = []
+    public internal(set) var chests: [Chest] = []
+    var elitesSpawned = 0
+    var bossSpawned = false
+    var wipeInProgress = false
     var enemyHash: SpatialHash
     var spawnAccumulator: Float = 0
 
@@ -153,10 +174,18 @@ public struct World {
             tickContactDamage()
             tickWeaponSystems()
             tickProjectiles()
+            tickEnemyShots()
+            tickBoss()
             tickGems()
+            tickChests()
         }
         sweepDead()
+        wipeInProgress = false
 
+        if state == .victory {
+            events.append(.victory)
+            return
+        }
         if player.hp <= 0 {
             state = .dead
             events.append(.playerDied)
@@ -196,9 +225,25 @@ public struct World {
                 desired = Vec2(desired.x - desired.y * sway,
                                desired.y + desired.x * sway).normalized
             case .spitter:
-                // Keeps its distance (ranged behavior lands with its shots in Phase 5).
+                // Holds range and lobs slow radial shots.
                 let d2 = e.pos.distanceSquared(to: player.pos)
                 if d2 < 240 * 240 { desired = desired * -0.6 }
+                e.cool -= Balance.dt
+                if e.cool <= 0, d2 < 420 * 420, config.combatEnabled,
+                   enemyShots.count < Balance.enemyShotCap {
+                    e.cool = Balance.spitterShotCooldown
+                    let aim = (player.pos - e.pos).normalized
+                    let base = atan2Approx(aim.y, aim.x)
+                    for s in 0..<3 {
+                        let spread = (Float(s) - 1) * 0.35
+                        let a = base + spread
+                        enemyShots.append(Projectile(pos: e.pos,
+                                                     vel: Vec2(cosApprox(a), sinApprox(a)) * Balance.spitterShotSpeed,
+                                                     damage: Balance.spitterShotDamage,
+                                                     radius: Balance.enemyShotRadius,
+                                                     life: Balance.enemyShotLife, pierce: 0))
+                    }
+                }
             default:
                 break
             }
@@ -281,9 +326,9 @@ public struct World {
             }
 
             if p.homing {
-                // Limited-turn-rate steering toward the nearest enemy.
-                if let t = nearestEnemyIndex(to: p.pos, maxDistance: 320) {
-                    let desired = (enemies[t].pos - p.pos).normalized
+                // Limited-turn-rate steering toward the nearest target.
+                if let target = nearestTargetPosition(to: p.pos, maxDistance: 320) {
+                    let desired = (target - p.pos).normalized
                     let speed = p.vel.length
                     let turn: Float = 5.5 * Balance.dt
                     let blended = Vec2(p.vel.x / max(speed, 1) + desired.x * turn,
@@ -368,6 +413,39 @@ public struct World {
         }
     }
 
+    private mutating func tickEnemyShots() {
+        let rr = Balance.playerRadius + Balance.enemyShotRadius
+        for i in enemyShots.indices {
+            var s = enemyShots[i]
+            guard s.life > 0 else { continue }
+            s.pos += s.vel * Balance.dt
+            s.life -= Balance.dt
+            if s.pos.distanceSquared(to: player.pos) <= rr * rr {
+                if player.iFrames <= 0, !config.playerInvulnerable {
+                    player.hp -= max(1, s.damage - loadout.flatArmor)
+                    player.iFrames = Balance.playerIFrames
+                    events.append(.playerHit(s.damage))
+                }
+                s.life = 0
+            }
+            enemyShots[i] = s
+        }
+    }
+
+    private mutating func tickChests() {
+        let rr = Balance.chestCollectRadius
+        for i in chests.indices where !chests[i].collected {
+            if chests[i].pos.distanceSquared(to: player.pos) <= rr * rr {
+                chests[i].collected = true
+                events.append(.chestCollected(chests[i].pos))
+                if pendingDraft == nil, config.draftsEnabled {
+                    generateDraft(rare: true)
+                    if pendingDraft != nil { events.append(.draftOpened) }
+                }
+            }
+        }
+    }
+
     private mutating func gainXP(_ amount: Float) {
         player.xp += amount * loadout.xpMultiplier
         while player.xp >= Balance.xpToNext(level: player.level) {
@@ -394,11 +472,33 @@ public struct World {
                 kills += 1
                 events.append(.enemyDied(e.pos, e.kind))
                 dropGem(at: e.pos, xp: Balance.stats(for: e.kind).xp)
-                if e.kind == .splitter {
+                if e.elite {
+                    chests.append(Chest(pos: e.pos))
+                    events.append(.chestDropped(e.pos))
+                }
+                if e.kind == .splitter, !e.elite, !wipeInProgress {
                     spawnSplitChildren(at: e.pos)
                 }
                 enemies.swapAt(i, enemies.count - 1)
                 enemies.removeLast()
+            } else {
+                i += 1
+            }
+        }
+        i = 0
+        while i < enemyShots.count {
+            if enemyShots[i].life <= 0 {
+                enemyShots.swapAt(i, enemyShots.count - 1)
+                enemyShots.removeLast()
+            } else {
+                i += 1
+            }
+        }
+        i = 0
+        while i < chests.count {
+            if chests[i].collected {
+                chests.swapAt(i, chests.count - 1)
+                chests.removeLast()
             } else {
                 i += 1
             }
@@ -447,14 +547,45 @@ public struct World {
         }
     }
 
-    // MARK: - Director v1
+    // MARK: - Director (full timeline: waves → elites → boss → spawns stop)
 
     private mutating func tickDirector() {
+        // Elites at 2:30 / 5:00 / 7:30.
+        if elitesSpawned < Balance.eliteTimes.count,
+           time >= Balance.eliteTimes[elitesSpawned] {
+            spawnElite()
+            elitesSpawned += 1
+        }
+        // PRIME at 9:00.
+        if !bossSpawned, time >= Balance.bossSpawnTime {
+            bossSpawned = true
+            spawnBoss()
+        }
+        // Regular spawns stop at 9:30 — the fight is the finale.
+        guard time < Balance.spawnsStopTime else { return }
         spawnAccumulator += Balance.spawnRate(at: time) * Balance.dt
         while spawnAccumulator >= 1 {
             spawnAccumulator -= 1
             spawnDirectorEnemy()
         }
+    }
+
+    private mutating func spawnElite() {
+        guard enemies.count < Balance.enemyCap else { return }
+        let kinds: [EnemyKind] = [.brick, .splitter, .weaver]
+        let kind = kinds[rng.int(in: 0...(kinds.count - 1))]
+        let stats = Balance.stats(for: kind)
+        let half = config.viewHalf
+        let ringRadius = (half.x * half.x + half.y * half.y).squareRoot() + Balance.spawnMargin
+        let a = rng.float(in: 0...(2 * Float.pi))
+        var e = Enemy(kind: kind,
+                      pos: player.pos + Vec2(cosApprox(a), sinApprox(a)) * ringRadius,
+                      hp: stats.hp * Balance.hpScale(at: time) * Balance.eliteHPMultiplier,
+                      radius: stats.radius * Balance.eliteScale,
+                      phase: rng.float(in: 0...(2 * Float.pi)))
+        e.elite = true
+        enemies.append(e)
+        events.append(.eliteSpawned(e.pos))
     }
 
     private mutating func spawnDirectorEnemy() {
@@ -512,6 +643,39 @@ public struct World {
     }
 
     // MARK: - Test hooks
+
+    /// Test hook: jumps the simulated clock (timeline/enrage tests).
+    internal mutating func testJumpClock(to seconds: Float) {
+        tickIndex = UInt64(seconds * Balance.tickRate)
+    }
+
+    /// Test hook: overrides boss HP (victory-path tests).
+    internal mutating func testSetBossHP(_ hp: Float) {
+        boss?.hp = hp
+    }
+
+    /// Test hook: spawns an elite immediately (chest/draft tests).
+    internal mutating func testSpawnEliteNow() {
+        spawnElite()
+    }
+
+    /// Demo/screenshot harness: fast-forwards the clock (boss showcase).
+    public mutating func demoJumpClock(to seconds: Float) {
+        testJumpClock(to: seconds)
+    }
+
+    /// Demo/screenshot harness: grants a strong mixed loadout.
+    public mutating func demoStrongLoadout() {
+        loadout.weaponLevels[WeaponKind.pulseBolt.rawValue] = 5
+        loadout.weaponLevels[WeaponKind.railLance.rawValue] = 4
+        loadout.weaponLevels[WeaponKind.orbitBlades.rawValue] = 4
+        loadout.weaponLevels[WeaponKind.novaBurst.rawValue] = 3
+        loadout.passiveLevels[PassiveKind.damage.rawValue] = 4
+        loadout.passiveLevels[PassiveKind.cooldown.rawValue] = 3
+        loadout.passiveLevels[PassiveKind.maxHP.rawValue] = 4
+        player.maxHP = Balance.playerMaxHP + loadout.bonusMaxHP
+        player.hp = player.maxHP
+    }
 
     /// Demo/screenshot harness: replaces the loadout with a single weapon.
     public mutating func demoLoadout(weapon: WeaponKind, level: Int) {
@@ -587,6 +751,16 @@ public struct World {
             mix(UInt64(g.pos.x.bitPattern))
             mix(UInt64(g.xp.bitPattern))
         }
+        for s in enemyShots {
+            mix(UInt64(s.pos.x.bitPattern))
+            mix(UInt64(s.pos.y.bitPattern))
+        }
+        if let b = boss {
+            mix(UInt64(b.pos.x.bitPattern))
+            mix(UInt64(b.pos.y.bitPattern))
+            mix(UInt64(b.hp.bitPattern))
+        }
+        mix(UInt64(chests.count))
         return h
     }
 }

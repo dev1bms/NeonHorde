@@ -19,6 +19,10 @@ final class GameScene: SKScene {
     private var beamNodes: [SKSpriteNode] = []
     private var gemPool: SpriteNodePool!
     private var effects: EffectsRig!
+    private var bossNode: SKSpriteNode!
+    private var bossBeamNodes: [SKSpriteNode] = []
+    private var enemyShotPool: SpriteNodePool!
+    private var chestPool: SpriteNodePool!
     private var background: BackgroundRig!
     private let cameraNode = SKCameraNode()
     private var joystick: VirtualJoystick!
@@ -77,6 +81,28 @@ final class GameScene: SKScene {
         }
         effects = EffectsRig(parent: self)
 
+        bossNode = SKSpriteNode(texture: baker.bossTexture)
+        bossNode.zPosition = ZBand.enemies + 5
+        bossNode.blendMode = .add
+        bossNode.isHidden = true
+        addChild(bossNode)
+        for _ in 0..<2 {   // PRIME's storm-phase beams
+            let b = SKSpriteNode(texture: baker.beamSegment)
+            b.anchorPoint = CGPoint(x: 0, y: 0.5)
+            b.blendMode = .add
+            b.zPosition = ZBand.enemies + 5.1
+            b.color = Palette.enemyLow
+            b.colorBlendFactor = 0.7
+            b.isHidden = true
+            addChild(b)
+            bossBeamNodes.append(b)
+        }
+        enemyShotPool = SpriteNodePool(texture: baker.enemyShot,
+                                       capacity: Balance.enemyShotCap,
+                                       zPosition: ZBand.projectiles + 0.4, parent: self)
+        chestPool = SpriteNodePool(texture: baker.chest, capacity: 8,
+                                   zPosition: ZBand.gems + 0.5, parent: self)
+
         joystick = VirtualJoystick(parent: cameraNode, baker: baker)
         hud = HUD(parent: cameraNode, viewSize: size,
                   safeTop: view.safeAreaInsets.top)
@@ -97,6 +123,13 @@ final class GameScene: SKScene {
         #if DEBUG
         if args.contains("ALMOSTDEAD") {   // fast, deterministic death-flow check
             world.player.hp = 1
+        }
+        // BOSSDEMO: strong build, clock at 8:57 — PRIME arrives in seconds.
+        if args.contains("BOSSDEMO") {
+            world.demoStrongLoadout()
+            world.demoJumpClock(to: 537)
+            world.config.draftsEnabled = false      // unattended showcase
+            world.config.playerInvulnerable = true  // stationary rig must outlast PRIME
         }
         // DEMO_WEAPON=<n>: showcase one weapon against a converging swarm.
         if let arg = args.first(where: { $0.hasPrefix("DEMO_WEAPON=") }),
@@ -175,9 +208,26 @@ final class GameScene: SKScene {
                 rotation = CGFloat(e.phase) * 0.3
             }
             enemyPools[e.kind]?.place(x: CGFloat(e.pos.x), y: CGFloat(e.pos.y),
-                                      rotation: rotation)
+                                      rotation: rotation,
+                                      scale: e.elite ? CGFloat(Balance.eliteScale) : 1)
         }
         for pool in enemyPools.values { pool.endFrame() }
+
+        enemyShotPool.beginFrame()
+        for s in world.enemyShots {
+            enemyShotPool.place(x: CGFloat(s.pos.x), y: CGFloat(s.pos.y))
+        }
+        enemyShotPool.endFrame()
+
+        chestPool.beginFrame()
+        for c in world.chests where !c.collected {
+            let pulse = 1 + 0.15 * sin(CGFloat(world.time) * 4)
+            chestPool.place(x: CGFloat(c.pos.x), y: CGFloat(c.pos.y),
+                            rotation: 0, scale: pulse)
+        }
+        chestPool.endFrame()
+
+        syncBoss()
 
         projectilePool.beginFrame()
         minePool.beginFrame()
@@ -206,6 +256,30 @@ final class GameScene: SKScene {
             : 1.0
 
         hud.update(world: world)
+    }
+
+    private func syncBoss() {
+        guard let boss = world.boss else {
+            bossNode.isHidden = true
+            for b in bossBeamNodes { b.isHidden = true }
+            return
+        }
+        bossNode.isHidden = false
+        bossNode.position = CGPoint(x: CGFloat(boss.pos.x), y: CGFloat(boss.pos.y))
+        bossNode.zRotation = CGFloat(boss.spinAngle)
+        // Telegraphs read through scale: swell before a dash, pulse in storm.
+        let phaseScale: CGFloat = boss.chargeState == 1 ? 1.18 : 1.0
+        bossNode.setScale(phaseScale)
+
+        let storm = boss.phase == .storm
+        for (k, node) in bossBeamNodes.enumerated() {
+            node.isHidden = !storm
+            guard storm else { continue }
+            let a = boss.spinAngle + Float(k) * .pi
+            node.position = bossNode.position
+            node.zRotation = CGFloat(a)
+            node.size = CGSize(width: 700, height: CGFloat(Balance.bossBeamHalfWidth) * 2)
+        }
     }
 
     /// Continuous weapon visuals derived from world state each frame.
@@ -276,6 +350,12 @@ final class GameScene: SKScene {
             case .chainArc(let points):
                 effects.chain(points: points.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) },
                               texture: baker.beamSegment)
+            case .victory:
+                gameOver.showVictory(world: world)
+            case .bossSpawned:
+                // Arena-wipe shockwave sells the entrance.
+                effects.ring(at: playerNode.position, texture: baker.ring,
+                             fromRadius: 40, toRadius: 700, ttl: 0.8)
             default:
                 break   // hits/kills/gems get their juice in Phase 7
             }

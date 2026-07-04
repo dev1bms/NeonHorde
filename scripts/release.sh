@@ -5,6 +5,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/env.sh
 
+# fastlane/xcpretty crash on non-UTF-8 locales ("invalid byte sequence in
+# US-ASCII") — headless shells here default to no locale at all.
+export LC_ALL=en_US.UTF-8
+export LANG=en_US.UTF-8
+
 ENV_FILE="$HOME/.appstoreconnect/neonhorde.env"
 
 # ---- 1. Validate credentials before any expensive step -----------------
@@ -37,16 +42,15 @@ echo "==> Reminder: the app record 'Neon Horde — Arena Survivor'"
 echo "    (com.belalalswerki.neonhorde) must exist in App Store Connect."
 echo "    If the upload below fails with 'app not found', do runbook step 3."
 
-# ---- 3. Build, upload to TestFlight, then submit with metadata ----------
-echo "==> Uploading to TestFlight (fastlane beta)…"
+# ---- 3. Build once, upload, push metadata, submit -----------------------
+# (An App Store upload is automatically available on TestFlight too — no
+# separate beta upload needed.)
+echo "==> Building, uploading, and submitting (fastlane release)…"
 for attempt in 1 2 3; do
-    if fastlane beta; then break; fi
-    echo "beta attempt $attempt failed — retrying in 60s (cloud-signing hiccups are known)"
+    if fastlane release; then break; fi
+    echo "release attempt $attempt failed — retrying in 60s (cloud-signing hiccups are known)"
     sleep 60
-    [ "$attempt" = 3 ] && { echo "ERROR: beta failed 3×"; exit 1; }
+    [ "$attempt" = 3 ] && { echo "ERROR: release failed 3×"; exit 1; }
 done
-
-echo "==> Pushing metadata + screenshots and submitting for review…"
-fastlane release
 
 echo "==> DONE. Track review status in App Store Connect."
